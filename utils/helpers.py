@@ -1,5 +1,4 @@
 import re
-import os
 
 
 def is_youtube_url(url: str) -> bool:
@@ -9,6 +8,8 @@ def is_youtube_url(url: str) -> bool:
         r"(https?://)?(www\.)?(youtube\.com/shorts/[\w-]+)",
         r"(https?://)?(www\.)?(youtube\.com/playlist\?list=[\w-]+)",
         r"(https?://)?(www\.)?(youtube\.com/channel/[\w-]+)",
+        r"(https?://)?(www\.)?(youtube\.com/live/[\w-]+)",
+        r"(https?://)?(www\.)?(m\.youtube\.com/watch\?v=[\w-]+)",
     ]
     return any(re.match(p, url) for p in patterns)
 
@@ -35,8 +36,9 @@ def format_file_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
-def sanitize_filename(filename: str) -> str:
+def sanitize_filename(filename: str, max_length: int = 200) -> str:
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
         filename = filename.replace(char, "_")
-    return filename[:100]
+    filename = re.sub(r"\s+", " ", filename).strip()
+    return filename[:max_length]

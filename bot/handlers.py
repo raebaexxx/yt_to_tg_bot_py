@@ -1,6 +1,8 @@
 import os
 import asyncio
 import logging
+import time
+from typing import Optional
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
@@ -17,8 +19,8 @@ from services.youtube import (
     get_playlist_videos,
     get_available_qualities,
 )
-from services.downloader import download_video, download_thumbnail
-from services.splitter import split_video, needs_split
+from services.downloader import download_video, download_thumbnail, DownloadContext
+from services.splitter import split_video
 from utils.helpers import (
     is_youtube_url,
     is_playlist_url,
@@ -27,13 +29,50 @@ from utils.helpers import (
     sanitize_filename,
 )
 from utils.cleanup import cleanup_file, cleanup_user_session
+from utils.progress import safe_edit_text
 from database.models import add_user, add_history
 from config import DOWNLOAD_DIR
 
 logger = logging.getLogger(__name__)
 router = Router()
 
-user_sessions = {}
+SESSION_TTL = 600
+MAX_SESSIONS = 1000
+
+
+class SessionEntry:
+    __slots__ = ("data", "created_at")
+
+    def __init__(self, data: dict):
+        self.data = data
+        self.created_at = time.time()
+
+    @property
+    def is_expired(self) -> bool:
+        return (time.time() - self.created_at) > SESSION_TTL
+
+
+user_sessions: dict[int, SessionEntry] = {}
+active_downloads: dict[int, DownloadContext] = {}
+
+
+def _get_session(user_id: int) -> Optional[dict]:
+    entry = user_sessions.get(user_id)
+    if entry is None or entry.is_expired:
+        user_sessions.pop(user_id, None)
+        return None
+    return entry.data
+
+
+def _set_session(user_id: int, data: dict):
+    if len(user_sessions) >= MAX_SESSIONS:
+        oldest_id = min(user_sessions, key=lambda uid: user_sessions[uid].created_at)
+        user_sessions.pop(oldest_id)
+    user_sessions[user_id] = SessionEntry(data)
+
+
+def _clear_session(user_id: int):
+    user_sessions.pop(user_id, None)
 
 
 @router.message(Command("start"))
@@ -93,11 +132,11 @@ async def _handle_single_video(
 
     available = get_available_qualities(info)
 
-    user_sessions[message.from_user.id] = {
+    _set_session(message.from_user.id, {
         "url": url,
         "title": title,
         "info": info,
-    }
+    })
 
     await state.set_state(VideoDownload.selecting_quality)
 
@@ -130,12 +169,12 @@ async def _handle_playlist(
 
     playlist_title = playlist_info.get("title", "Unknown playlist")
 
-    user_sessions[message.from_user.id] = {
+    _set_session(message.from_user.id, {
         "url": url,
         "title": playlist_title,
         "videos": videos,
         "playlist_page": 0,
-    }
+    })
 
     await state.set_state(PlaylistDownload.selecting_video)
 
@@ -152,7 +191,7 @@ async def _handle_playlist(
 @router.callback_query(F.data.startswith("quality_"), VideoDownload.selecting_quality)
 async def handle_quality_selection(callback: CallbackQuery, state: FSMContext, bot: Bot):
     quality = callback.data.split("_")[1]
-    session = user_sessions.get(callback.from_user.id)
+    session = _get_session(callback.from_user.id)
 
     if not session:
         await callback.answer("Session expired. Send the link again.")
@@ -168,6 +207,9 @@ async def handle_quality_selection(callback: CallbackQuery, state: FSMContext, b
     user_dir = os.path.join(DOWNLOAD_DIR, str(callback.from_user.id))
     os.makedirs(user_dir, exist_ok=True)
 
+    dl_ctx = DownloadContext()
+    active_downloads[callback.from_user.id] = dl_ctx
+
     filepath = await download_video(
         session["url"],
         quality,
@@ -175,7 +217,10 @@ async def handle_quality_selection(callback: CallbackQuery, state: FSMContext, b
         chat_id=callback.message.chat.id,
         message_id=callback.message.message_id,
         output_dir=user_dir,
+        cancel_ctx=dl_ctx,
     )
+
+    active_downloads.pop(callback.from_user.id, None)
 
     if not filepath or not os.path.exists(filepath[0]):
         await callback.message.edit_text("Download failed. Try again later.")
@@ -204,35 +249,36 @@ async def _upload_progress_tracker(
     chat_id: int,
     message_id: int,
     file_size: int,
+    stop_event: asyncio.Event,
     part_num: int = None,
     total_parts: int = None,
 ):
-    import time
     start_time = time.time()
     last_update = 0
 
-    while True:
-        now = time.time()
-        if now - last_update < 2:
-            await asyncio.sleep(0.5)
-            continue
+    try:
+        while not stop_event.is_set():
+            now = time.time()
+            if now - last_update < 2:
+                await asyncio.sleep(0.5)
+                continue
 
-        last_update = now
-        elapsed = now - start_time
+            last_update = now
+            elapsed = now - start_time
 
-        part_info = f"Part {part_num}/{total_parts} " if total_parts and total_parts > 1 else ""
-        text = (
-            f"{part_info}Uploading to Telegram...\n"
-            f"Size: {format_file_size(file_size)}\n"
-            f"Elapsed: {int(elapsed)}s"
-        )
+            part_info = f"Part {part_num}/{total_parts} " if total_parts and total_parts > 1 else ""
+            text = (
+                f"{part_info}Uploading to Telegram...\n"
+                f"Size: {format_file_size(file_size)}\n"
+                f"Elapsed: {int(elapsed)}s"
+            )
 
-        try:
-            await bot.edit_message_text(text=text, chat_id=chat_id, message_id=message_id)
-        except Exception:
-            pass
-
-        await asyncio.sleep(1)
+            await safe_edit_text(bot, chat_id, message_id, text)
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
 
 
 async def _send_video_files(
@@ -260,12 +306,14 @@ async def _send_video_files(
             f"Uploading{' part ' + str(i) + '/' + str(total) if total > 1 else ''}...\nSize: {format_file_size(file_size)}"
         )
 
+        stop_event = asyncio.Event()
         tracker_task = asyncio.create_task(
             _upload_progress_tracker(
                 bot,
                 progress_msg.chat.id,
                 progress_msg.message_id,
                 file_size,
+                stop_event,
                 part_num=i if total > 1 else None,
                 total_parts=total if total > 1 else None,
             )
@@ -284,6 +332,7 @@ async def _send_video_files(
                 height=height,
             )
 
+            stop_event.set()
             tracker_task.cancel()
             try:
                 await tracker_task
@@ -293,6 +342,7 @@ async def _send_video_files(
             await progress_msg.delete()
 
         except Exception:
+            stop_event.set()
             tracker_task.cancel()
             try:
                 await tracker_task
@@ -310,7 +360,7 @@ async def _send_video_files(
 @router.callback_query(F.data.startswith("pl_video_"))
 async def handle_playlist_video_select(callback: CallbackQuery, state: FSMContext):
     idx = int(callback.data.split("_")[2])
-    session = user_sessions.get(callback.from_user.id)
+    session = _get_session(callback.from_user.id)
 
     if not session or "videos" not in session:
         await callback.answer("Session expired.")
@@ -356,7 +406,7 @@ async def handle_playlist_video_select(callback: CallbackQuery, state: FSMContex
 @router.callback_query(F.data.startswith("pl_page_"))
 async def handle_playlist_page(callback: CallbackQuery, state: FSMContext):
     page = int(callback.data.split("_")[2])
-    session = user_sessions.get(callback.from_user.id)
+    session = _get_session(callback.from_user.id)
 
     if not session or "videos" not in session:
         await callback.answer("Session expired.")
@@ -381,7 +431,7 @@ async def handle_playlist_page(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data == "pl_download_all")
 async def handle_download_all(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    session = user_sessions.get(callback.from_user.id)
+    session = _get_session(callback.from_user.id)
 
     if not session or "videos" not in session:
         await callback.answer("Session expired.")
@@ -420,6 +470,9 @@ async def handle_download_all(callback: CallbackQuery, state: FSMContext, bot: B
         available = get_available_qualities(info)
         quality = "720p" if "720p" in available else available[0] if available else "360p"
 
+        dl_ctx = DownloadContext()
+        active_downloads[callback.from_user.id] = dl_ctx
+
         filepath = await download_video(
             video_url,
             quality,
@@ -427,7 +480,10 @@ async def handle_download_all(callback: CallbackQuery, state: FSMContext, bot: B
             chat_id=progress_msg.chat.id,
             message_id=progress_msg.message_id,
             output_dir=user_dir,
+            cancel_ctx=dl_ctx,
         )
+
+        active_downloads.pop(callback.from_user.id, None)
 
         if filepath and os.path.exists(filepath[0]):
             filepath, width, height = filepath
@@ -463,7 +519,7 @@ async def handle_playlist_quality_selection(
     callback: CallbackQuery, state: FSMContext, bot: Bot
 ):
     quality = callback.data.split("_")[1]
-    session = user_sessions.get(callback.from_user.id)
+    session = _get_session(callback.from_user.id)
 
     if not session:
         await callback.answer("Session expired.")
@@ -486,6 +542,9 @@ async def handle_playlist_quality_selection(
     user_dir = os.path.join(DOWNLOAD_DIR, str(callback.from_user.id))
     os.makedirs(user_dir, exist_ok=True)
 
+    dl_ctx = DownloadContext()
+    active_downloads[callback.from_user.id] = dl_ctx
+
     filepath = await download_video(
         video_url,
         quality,
@@ -493,7 +552,10 @@ async def handle_playlist_quality_selection(
         chat_id=callback.message.chat.id,
         message_id=callback.message.message_id,
         output_dir=user_dir,
+        cancel_ctx=dl_ctx,
     )
+
+    active_downloads.pop(callback.from_user.id, None)
 
     if not filepath or not os.path.exists(filepath[0]):
         await callback.message.edit_text("Download failed.")
@@ -521,7 +583,12 @@ async def handle_playlist_quality_selection(
 
 @router.callback_query(F.data == "cancel")
 async def handle_cancel(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
+    dl_ctx = active_downloads.pop(user_id, None)
+    if dl_ctx:
+        dl_ctx.cancel()
+
+    _clear_session(user_id)
     await state.clear()
-    user_sessions.pop(callback.from_user.id, None)
     await callback.message.edit_text("Cancelled. Send a new link.")
     await callback.answer()

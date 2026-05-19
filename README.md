@@ -4,16 +4,19 @@ Telegram bot that downloads videos from YouTube and sends them directly to Teleg
 
 ## Features
 
-- **Quality Selection** — Choose from 1080p, 720p, 480p, 360p, or audio only via inline buttons
-- **Auto-split** — Videos larger than 2GB are automatically split into parts
-- **Video format** — All videos are sent as playable video (not as files) in MP4 H.264
-- **Playlist support** — Download entire playlists or select individual videos
-- **Download history** — Stored in SQLite
+- **Quality Selection** -- Choose from 4K, 1080p, 720p, 480p, 360p, or audio only via inline buttons
+- **Auto-split** -- Videos larger than 2GB are automatically split into parts
+- **Streaming** -- All videos sent with `supports_streaming` and correct aspect ratio
+- **Playlist support** -- Download entire playlists or select individual videos
+- **Download history** -- Stored in SQLite
+- **Fast downloads** -- Uses aria2c with 16 parallel connections
+- **Cancellation** -- Cancel downloads mid-process with the Cancel button
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.12+
 - FFmpeg (required for video conversion and splitting)
+- aria2c (recommended for faster downloads)
 - **Local Bot API Server** (required for videos >50MB)
 
 ## Local Bot API Server
@@ -23,11 +26,9 @@ Telegram Bot API has a **50MB upload limit** by default. To send videos up to 2G
 ### Run via Docker (recommended)
 
 ```bash
-# Pull the official Telegram Bot API image
 docker pull aiogram/telegram-bot-api:latest
 
-# Start the server
-docker run -p 8081:8081 -e TELEGRAM_API_ID=YOUR_API_ID -e TELEGRAM_API_HASH=YOUR_API_HASH aiogram/telegram-bot-api:latest
+docker run -p 8081:8081 -e TELEGRAM_API_ID=YOUR_API_ID -e TELEGRAM_API_HASH=YOUR_API_HASH aiogram/telegram-bot-api:latest --timeout 3600
 ```
 
 Get `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` at https://my.telegram.org
@@ -37,41 +38,30 @@ Then set in `.env`:
 BOT_API_SERVER_URL=http://localhost:8081
 ```
 
-### Without local server
-
-Videos under 50MB will work without a local server. Larger videos will fail with "Request Entity Too Large".
-
 ## Installation
 
 ### Local
 
 ```bash
-# Clone the repository
 git clone https://github.com/raebaexxx/yt_to_tg_bot_py.git
 cd yt_to_tg_bot_py
 
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 
-# Install dependencies
 pip install -r requirements.txt
 
-# Configure
 cp .env.example .env
 # Edit .env and add your bot token
 
-# Run
 python bot/main.py
 ```
 
 ### Docker
 
 ```bash
-# Build
 docker build -t yt-tg-bot .
 
-# Run
 docker run --env-file .env yt-tg-bot
 ```
 
@@ -80,40 +70,31 @@ docker run --env-file .env yt-tg-bot
 | Variable | Description | Default |
 |---|---|---|
 | `BOT_TOKEN` | Telegram bot token from @BotFather | Required |
-| `BOT_API_SERVER_URL` | Local Bot API Server URL (for videos >50MB) | None |
-| `MAX_FILE_SIZE_MB` | Maximum file size before splitting (MB) | 1900 |
-| `DOWNLOAD_DIR` | Directory for temporary downloads | ./downloads |
-| `LOG_LEVEL` | Logging level | INFO |
-
-## Getting a Bot Token
-
-1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
-2. Send `/newbot` and follow the instructions
-3. Copy the token and paste it into `.env`
+| `BOT_API_SERVER_URL` | Local Bot API Server URL | `http://localhost:8081` |
+| `MAX_FILE_SIZE_MB` | Max file size before splitting | `1900` |
+| `DOWNLOAD_DIR` | Directory for temporary downloads | `./downloads` |
+| `LOG_LEVEL` | Logging level | `INFO` |
 
 ## Project Structure
 
 ```
 ├── bot/
-│   ├── main.py          # Entry point
-│   ├── handlers.py      # Message & callback handlers
+│   ├── main.py          # Entry point, bot lifecycle
+│   ├── handlers.py      # Message/callback handlers
 │   ├── keyboards.py     # Inline keyboards
 │   └── states.py        # FSM states
 ├── services/
-│   ├── youtube.py       # yt-dlp integration
-│   ├── downloader.py    # Download & MP4 conversion
-│   └── splitter.py      # FFmpeg file splitting (>2GB)
+│   ├── youtube.py       # yt-dlp wrappers
+│   ├── downloader.py    # Download, codec detection, ffmpeg
+│   └── splitter.py      # Video splitting for large files
 ├── database/
 │   └── models.py        # SQLite models (users, history)
 ├── utils/
 │   ├── helpers.py       # URL validation, formatting
-│   └── cleanup.py       # Temp file cleanup
+│   ├── cleanup.py       # File/directory cleanup
+│   └── progress.py      # Safe message editing
 ├── config.py            # Environment configuration
 ├── requirements.txt
 ├── Dockerfile
 └── .env.example
 ```
-
-## License
-
-MIT

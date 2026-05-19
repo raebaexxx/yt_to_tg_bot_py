@@ -5,7 +5,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def cleanup_file(filepath: str):
+def cleanup_file(filepath: str) -> None:
     if os.path.exists(filepath):
         try:
             os.remove(filepath)
@@ -14,7 +14,7 @@ def cleanup_file(filepath: str):
             logger.error(f"Failed to remove {filepath}: {e}")
 
 
-def cleanup_directory(dirpath: str):
+def cleanup_directory(dirpath: str) -> None:
     if os.path.exists(dirpath):
         try:
             shutil.rmtree(dirpath)
@@ -23,6 +23,6 @@ def cleanup_directory(dirpath: str):
             logger.error(f"Failed to remove directory {dirpath}: {e}")
 
 
-def cleanup_user_session(session_dir: str):
+def cleanup_user_session(session_dir: str) -> None:
     if os.path.exists(session_dir):
         cleanup_directory(session_dir)

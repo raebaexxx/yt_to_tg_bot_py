@@ -1,5 +1,5 @@
+import hashlib
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from services.youtube import QUALITY_OPTIONS
 
 
 def get_quality_keyboard(available_qualities: list, url: str = None) -> InlineKeyboardMarkup:
@@ -16,7 +16,8 @@ def get_quality_keyboard(available_qualities: list, url: str = None) -> InlineKe
     for q in available_qualities:
         callback_data = f"quality_{q}"
         if url:
-            callback_data = f"quality_{q}_{hash(url) % 10000}"
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:6]
+            callback_data = f"quality_{q}_{url_hash}"
         rows.append([
             InlineKeyboardButton(
                 text=quality_labels.get(q, q),

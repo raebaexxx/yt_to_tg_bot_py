@@ -28,9 +28,8 @@ def split_video(filepath: str, output_dir: str) -> list:
         return [filepath]
 
     file_size = get_file_size(filepath)
-    part_duration = int(
-        (MAX_FILE_SIZE_BYTES * 0.95 / file_size) * duration
-    )
+    target_part_size = int(MAX_FILE_SIZE_BYTES * 0.9)
+    part_duration = int((target_part_size / file_size) * duration)
 
     if part_duration <= 0:
         part_duration = max(60, int(duration / 10))
@@ -72,8 +71,14 @@ def split_video(filepath: str, output_dir: str) -> list:
                 if f.startswith(f"{base_name}_part_") and f.endswith(ext)
             ]
         )
-        logger.info(f"Split into {len(parts)} parts")
-        return parts
+
+        verified = [p for p in parts if os.path.getsize(p) > 0]
+        if not verified:
+            logger.error("Split produced no valid parts")
+            return [filepath]
+
+        logger.info(f"Split into {len(verified)} parts")
+        return verified
 
     except subprocess.TimeoutExpired:
         logger.error("FFmpeg split timed out")

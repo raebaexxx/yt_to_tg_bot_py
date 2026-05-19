@@ -5,21 +5,49 @@ import subprocess
 import logging
 import time
 import re
+import shutil
 from typing import Optional
 from config import DOWNLOAD_DIR
 from utils.helpers import sanitize_filename, format_file_size
 
 logger = logging.getLogger(__name__)
 
+_aria2c_available: Optional[bool] = None
+
+
+def _is_aria2c_available() -> bool:
+    global _aria2c_available
+    if _aria2c_available is not None:
+        return _aria2c_available
+    _aria2c_available = shutil.which("aria2c") is not None
+    if not _aria2c_available:
+        logger.warning("aria2c not found, falling back to default downloader")
+    return _aria2c_available
+
+
+class DownloadContext:
+    __slots__ = ("_cancelled",)
+
+    def __init__(self):
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+
 
 class ProgressHook:
-    def __init__(self, bot, chat_id, message_id, loop):
+    def __init__(self, bot, chat_id, message_id, loop, cancel_ctx: Optional[DownloadContext] = None):
         self.bot = bot
         self.chat_id = chat_id
         self.message_id = message_id
         self.loop = loop
         self.last_update = 0
         self._edit_task = None
+        self.cancel_ctx = cancel_ctx
 
     def _safe_edit(self, text):
         async def _do_edit():
@@ -37,6 +65,9 @@ class ProgressHook:
         self._edit_task = asyncio.run_coroutine_threadsafe(_do_edit(), self.loop)
 
     def __call__(self, d):
+        if self.cancel_ctx and self.cancel_ctx.is_cancelled:
+            raise yt_dlp.utils.DownloadError("Download cancelled by user")
+
         if d["status"] == "downloading":
             now = time.time()
             if now - self.last_update < 2:
@@ -94,6 +125,10 @@ def _build_format_string(quality: str) -> tuple:
     return fmt, False
 
 
+def _get_free_space(path: str) -> int:
+    return shutil.disk_usage(path).free
+
+
 async def download_video(
     url: str,
     quality: str,
@@ -101,6 +136,7 @@ async def download_video(
     chat_id: int,
     message_id: int,
     output_dir: str = None,
+    cancel_ctx: Optional[DownloadContext] = None,
 ) -> Optional[tuple]:
     if output_dir is None:
         output_dir = DOWNLOAD_DIR
@@ -113,7 +149,7 @@ async def download_video(
     output_template = os.path.join(output_dir, f"{filename}.%(ext)s")
 
     loop = asyncio.get_event_loop()
-    progress_hook = ProgressHook(bot, chat_id, message_id, loop)
+    progress_hook = ProgressHook(bot, chat_id, message_id, loop, cancel_ctx)
 
     ydl_opts = {
         "format": format_str,
@@ -129,14 +165,16 @@ async def download_video(
             "http": lambda n: 5 * (n + 1),
             "fragment": lambda n: 5 * (n + 1),
         },
-        "external_downloader": "aria2c",
-        "external_downloader_args": [
+    }
+
+    if _is_aria2c_available():
+        ydl_opts["external_downloader"] = "aria2c"
+        ydl_opts["external_downloader_args"] = [
             "--min-split-size=1M",
             "--max-connection-per-server=16",
             "--max-concurrent-downloads=16",
             "--split=16",
-        ],
-    }
+        ]
 
     if not is_audio:
         ydl_opts["merge_output_format"] = "mp4"
@@ -177,83 +215,70 @@ async def download_video(
                         return (m4a_path, None, None)
                 return (downloaded, None, None)
 
-            video_codec = _get_video_codec(downloaded)
+            video_codec, width, height = _get_video_info(downloaded)
             file_ext = os.path.splitext(downloaded)[1]
             file_size = os.path.getsize(downloaded)
-            logger.info(f"Downloaded: {downloaded}, codec: {video_codec}, ext: {file_ext}, size: {format_file_size(file_size)}")
+            logger.info(f"Downloaded: {downloaded}, codec: {video_codec}, ext: {file_ext}, size: {format_file_size(file_size)}, dims: {width}x{height}")
 
             if video_codec in ("h264", "avc1"):
                 logger.info("Video is already H.264, preparing for streaming (no re-encode)")
                 mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
-                if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop):
+                if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
                     os.remove(downloaded)
-                    width, height = _get_video_dimensions(mp4_path)
                     return (mp4_path, width, height)
                 else:
                     logger.warning("Faststart failed, sending original file")
-                    width, height = _get_video_dimensions(downloaded)
                     return (downloaded, width, height)
 
             if quality == "4k":
-                logger.info("4K video — remux with faststart only (no codec conversion)")
+                logger.info("4K video -- remux with faststart only (no codec conversion)")
                 mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
-                if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop):
+                if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
                     os.remove(downloaded)
-                    width, height = _get_video_dimensions(mp4_path)
                     return (mp4_path, width, height)
                 else:
                     logger.warning("Faststart failed, sending original file")
-                    width, height = _get_video_dimensions(downloaded)
                     return (downloaded, width, height)
 
             logger.info(f"Video codec {video_codec} requires conversion to H.264")
             mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
-            if not _convert_to_phone_mp4(downloaded, mp4_path, bot, chat_id, message_id, loop):
+            if not _convert_to_phone_mp4(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
                 logger.error("Failed to convert video to phone-compatible format")
                 return None
             if os.path.exists(mp4_path):
                 os.remove(downloaded)
-            width, height = _get_video_dimensions(mp4_path)
             return (mp4_path, width, height)
 
+    except yt_dlp.utils.DownloadError as e:
+        if "cancelled" in str(e).lower():
+            logger.info("Download cancelled by user")
+        else:
+            logger.error(f"Failed to download video: {e}")
+        return None
     except Exception as e:
         logger.error(f"Failed to download video: {e}")
         return None
 
 
-def _get_video_codec(filepath: str) -> Optional[str]:
+def _get_video_info(filepath: str) -> tuple:
     cmd = [
         "ffprobe",
         "-v", "error",
         "-select_streams", "v:0",
-        "-show_entries", "stream=codec_name",
-        "-of", "csv=p=0",
-        filepath,
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        return result.stdout.strip().strip(",")
-    except Exception:
-        return None
-
-
-def _get_video_dimensions(filepath: str) -> tuple:
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height",
+        "-show_entries", "stream=codec_name,width,height",
         "-of", "csv=p=0",
         filepath,
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         parts = result.stdout.strip().strip(",").split(",")
-        if len(parts) == 2:
-            return int(parts[0]), int(parts[1])
+        if len(parts) == 3:
+            return parts[0], int(parts[1]), int(parts[2])
+        elif len(parts) == 1:
+            return parts[0], None, None
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 
 def _safe_edit_text(bot, chat_id, message_id, text, loop):
@@ -270,7 +295,7 @@ def _safe_edit_text(bot, chat_id, message_id, text, loop):
     asyncio.run_coroutine_threadsafe(_do_edit(), loop)
 
 
-def _add_faststart(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None) -> bool:
+def _add_faststart(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None, cancel_ctx: Optional[DownloadContext] = None) -> bool:
     cmd = [
         "ffmpeg",
         "-i", input_path,
@@ -294,6 +319,11 @@ def _add_faststart(input_path: str, output_path: str, bot=None, chat_id=None, me
         last_update = 0
 
         for line in process.stdout:
+            if cancel_ctx and cancel_ctx.is_cancelled:
+                process.kill()
+                logger.info("Faststart cancelled by user")
+                return False
+
             line_str = line.strip()
             logger.debug(f"FFmpeg faststart: {line_str}")
 
@@ -325,7 +355,7 @@ def _add_faststart(input_path: str, output_path: str, bot=None, chat_id=None, me
         return False
 
 
-def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None) -> bool:
+def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None, cancel_ctx: Optional[DownloadContext] = None) -> bool:
     time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
     duration_pattern = re.compile(r"Duration: (\d+):(\d+):(\d+\.\d+)")
 
@@ -359,6 +389,11 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
         total_duration = None
 
         for line in process.stdout:
+            if cancel_ctx and cancel_ctx.is_cancelled:
+                process.kill()
+                logger.info("Conversion cancelled by user")
+                return False
+
             line_str = line.strip()
             logger.debug(f"FFmpeg: {line_str}")
 
@@ -428,6 +463,8 @@ def _convert_audio_to_m4a(input_path: str, output_path: str) -> bool:
 
 
 def download_thumbnail(url: str, output_dir: str) -> Optional[str]:
+    import urllib.request
+
     ydl_opts = {
         "writesthumbnail": True,
         "skip_download": True,
@@ -443,13 +480,11 @@ def download_thumbnail(url: str, output_dir: str) -> Optional[str]:
 
                 if thumb_url.endswith(".webp"):
                     webp_path = os.path.join(output_dir, "thumb.webp")
-                    import urllib.request
                     urllib.request.urlretrieve(thumb_url, webp_path)
                     _convert_webp_to_jpg(webp_path, thumb_path)
                     if os.path.exists(webp_path):
                         os.remove(webp_path)
                 else:
-                    import urllib.request
                     urllib.request.urlretrieve(thumb_url, thumb_path)
 
                 if os.path.exists(thumb_path):
