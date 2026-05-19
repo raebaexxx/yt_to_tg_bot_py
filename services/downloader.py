@@ -54,32 +54,44 @@ def _build_format_string(quality: str) -> tuple:
     if quality == "audio":
         return "bestaudio[acodec^=mp4a]/bestaudio", True
 
-    height_map = {
-        "4k": 2160,
-        "1080p": 1080,
-        "720p": 720,
-        "480p": 480,
-        "360p": 360,
-    }
-    h = height_map.get(quality, 720)
-
-    if quality in ("4k", "1080p"):
-        native_mp4 = (
-            f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio[acodec^=mp4a]/"
-            f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio/"
-            f"bestvideo[height<={h}]+bestaudio[acodec^=mp4a]/"
-            f"bestvideo[height<={h}]+bestaudio/"
-            f"best[height<={h}][ext=mp4]/"
-            f"best[height<={h}]"
+    if quality == "4k":
+        fmt = (
+            "bestvideo[height=2160]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[height=2160]+bestaudio/"
+            "bestvideo[height>=2160]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[height>=2160]+bestaudio/"
+            "bestvideo[vcodec^=avc1][height<=2160]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[vcodec^=avc1][height<=2160]+bestaudio/"
+            "bestvideo[height<=2160]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[height<=2160]+bestaudio/"
+            "best[height<=2160][ext=mp4]/"
+            "best[height<=2160]"
+        )
+    elif quality == "1080p":
+        fmt = (
+            "bestvideo[height=1080]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[height=1080]+bestaudio/"
+            "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[vcodec^=avc1][height<=1080]+bestaudio/"
+            "bestvideo[height<=1080]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[height<=1080]+bestaudio/"
+            "best[height<=1080][ext=mp4]/"
+            "best[height<=1080]"
         )
     else:
-        native_mp4 = (
+        height_map = {
+            "720p": 720,
+            "480p": 480,
+            "360p": 360,
+        }
+        h = height_map.get(quality, 720)
+        fmt = (
             f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio[acodec^=mp4a]/"
             f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio/"
             f"best[height<={h}][ext=mp4]/"
             f"best[height<={h}]"
         )
-    return native_mp4, False
+    return fmt, False
 
 
 async def download_video(
@@ -121,6 +133,13 @@ async def download_video(
             info = ydl.extract_info(url, download=True)
             if not info:
                 return None
+
+            requested_formats = info.get("requested_formats", [])
+            if requested_formats:
+                for rf in requested_formats:
+                    logger.info(f"yt-dlp selected format: {rf.get('format_note', '?')} - {rf.get('vcodec', '?')} / {rf.get('acodec', '?')} - {rf.get('width', '?')}x{rf.get('height', '?')}")
+            else:
+                logger.info(f"yt-dlp selected format: {info.get('format', '?')}")
 
             downloaded = ydl.prepare_filename(info)
             if not os.path.exists(downloaded):
