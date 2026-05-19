@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Optional
 from config import DOWNLOAD_DIR
-from utils.helpers import sanitize_filename
+from utils.helpers import sanitize_filename, format_file_size
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ async def download_video(
                     return downloaded
 
             mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
-            if not _convert_to_phone_mp4(downloaded, mp4_path):
+            if not _convert_to_phone_mp4(downloaded, mp4_path, bot, chat_id, message_id, loop):
                 logger.error("Failed to convert video to phone-compatible format")
                 return None
             if os.path.exists(mp4_path):
@@ -159,7 +159,9 @@ def _is_h264_mp4(filepath: str) -> bool:
         return False
 
 
-def _convert_to_phone_mp4(input_path: str, output_path: str) -> bool:
+def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None) -> bool:
+    import re
+
     cmd = [
         "ffmpeg",
         "-i", input_path,
@@ -175,6 +177,8 @@ def _convert_to_phone_mp4(input_path: str, output_path: str) -> bool:
         "-y", output_path,
     ]
 
+    logger.info(f"Starting FFmpeg conversion: {' '.join(cmd)}")
+
     try:
         process = subprocess.Popen(
             cmd,
@@ -182,6 +186,50 @@ def _convert_to_phone_mp4(input_path: str, output_path: str) -> bool:
             stderr=subprocess.PIPE,
             text=True,
         )
+
+        input_size = os.path.getsize(input_path)
+        start_time = time.time()
+        last_update = 0
+        total_duration = None
+        time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
+        duration_pattern = re.compile(r"Duration: (\d+):(\d+):(\d+\.\d+)")
+
+        while True:
+            line = process.stderr.readline()
+            if not line:
+                break
+
+            line_str = line.strip()
+            logger.debug(f"FFmpeg: {line_str}")
+
+            if total_duration is None:
+                dur_match = duration_pattern.search(line_str)
+                if dur_match:
+                    h, m, s = dur_match.groups()
+                    total_duration = int(h) * 3600 + int(m) * 60 + float(s)
+
+            time_match = time_pattern.search(line_str)
+            if time_match:
+                now = time.time()
+                if now - last_update >= 2:
+                    h, m, s = time_match.groups()
+                    current_time = int(h) * 3600 + int(m) * 60 + float(s)
+
+                    elapsed = now - start_time
+                    speed = current_time / elapsed if elapsed > 0 else 0
+                    percent = int((current_time / total_duration) * 100) if total_duration else 0
+
+                    msg = f"Converting: {percent}% (speed: {speed:.1f}x)"
+                    logger.info(msg)
+
+                    if bot and chat_id and message_id and loop:
+                        asyncio.run_coroutine_threadsafe(
+                            bot.edit_message_text(text=msg, chat_id=chat_id, message_id=message_id),
+                            loop,
+                        )
+
+                    last_update = now
+
         _, stderr = process.communicate(timeout=7200)
 
         if process.returncode != 0:
@@ -192,6 +240,8 @@ def _convert_to_phone_mp4(input_path: str, output_path: str) -> bool:
             logger.error("FFmpeg produced empty output")
             return False
 
+        output_size = os.path.getsize(output_path)
+        logger.info(f"FFmpeg conversion complete: {format_file_size(input_size)} -> {format_file_size(output_size)}")
         return True
 
     except subprocess.TimeoutExpired:
