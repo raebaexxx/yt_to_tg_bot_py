@@ -129,6 +129,13 @@ async def download_video(
             "http": lambda n: 5 * (n + 1),
             "fragment": lambda n: 5 * (n + 1),
         },
+        "external_downloader": "aria2c",
+        "external_downloader_args": [
+            "--min-split-size=1M",
+            "--max-connection-per-server=16",
+            "--max-concurrent-downloads=16",
+            "--split=16",
+        ],
     }
 
     if not is_audio:
