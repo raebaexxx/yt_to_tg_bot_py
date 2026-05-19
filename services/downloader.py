@@ -3,6 +3,7 @@ import asyncio
 import yt_dlp
 import subprocess
 import logging
+import time
 from typing import Optional
 from config import DOWNLOAD_DIR
 from utils.helpers import sanitize_filename
@@ -20,7 +21,6 @@ class ProgressHook:
 
     def __call__(self, d):
         if d["status"] == "downloading":
-            import time
             now = time.time()
             if now - self.last_update < 2:
                 return
@@ -34,7 +34,7 @@ class ProgressHook:
             )
         elif d["status"] == "finished":
             asyncio.run_coroutine_threadsafe(
-                self.bot.edit_message_text(text="Download complete, processing...", chat_id=self.chat_id, message_id=self.message_id),
+                self.bot.edit_message_text(text="Download complete, converting to phone-compatible format...", chat_id=self.chat_id, message_id=self.message_id),
                 self.loop,
             )
 
@@ -53,8 +53,6 @@ async def download_video(
     os.makedirs(output_dir, exist_ok=True)
 
     from services.youtube import QUALITY_OPTIONS
-
-    format_str = QUALITY_OPTIONS.get(quality, QUALITY_OPTIONS["720p"])
 
     if quality == "audio":
         format_str = "bestaudio"
@@ -78,7 +76,7 @@ async def download_video(
     }
 
     if quality != "audio":
-        ydl_opts["merge_output_format"] = "mp4"
+        ydl_opts["merge_output_format"] = "mkv"
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -88,7 +86,7 @@ async def download_video(
 
             downloaded = ydl.prepare_filename(info)
             if not os.path.exists(downloaded):
-                for ext_check in ["mp4", "mkv", "webm", "m4a"]:
+                for ext_check in ["mkv", "webm", "mp4", "m4a"]:
                     potential = os.path.join(
                         output_dir, f"{filename}.{ext_check}"
                     )
@@ -100,21 +98,29 @@ async def download_video(
                 logger.error(f"Downloaded file not found: {downloaded}")
                 return None
 
-            if quality != "audio" and not downloaded.endswith(".mp4"):
-                mp4_path = os.path.join(output_dir, f"{filename}.mp4")
-                _convert_to_mp4(downloaded, mp4_path)
+            mp4_path = os.path.join(output_dir, f"{filename}.mp4")
+            if quality != "audio":
+                if not _convert_to_phone_mp4(downloaded, mp4_path, bot, chat_id, message_id):
+                    logger.error("Failed to convert video to phone-compatible format")
+                    return None
                 if os.path.exists(mp4_path):
                     os.remove(downloaded)
-                    downloaded = mp4_path
-
-            return downloaded
+                return mp4_path
+            else:
+                if not downloaded.endswith(".m4a"):
+                    m4a_path = os.path.join(output_dir, f"{filename}.m4a")
+                    _convert_audio_to_m4a(downloaded, m4a_path)
+                    if os.path.exists(m4a_path):
+                        os.remove(downloaded)
+                        return m4a_path
+                return downloaded
 
     except Exception as e:
         logger.error(f"Failed to download video: {e}")
         return None
 
 
-def _convert_to_mp4(input_path: str, output_path: str) -> bool:
+def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None) -> bool:
     cmd = [
         "ffmpeg",
         "-i",
@@ -122,7 +128,15 @@ def _convert_to_mp4(input_path: str, output_path: str) -> bool:
         "-c:v",
         "libx264",
         "-preset",
-        "fast",
+        "medium",
+        "-crf",
+        "23",
+        "-profile:v",
+        "high",
+        "-level",
+        "4.0",
+        "-pix_fmt",
+        "yuv420p",
         "-c:a",
         "aac",
         "-b:a",
@@ -132,13 +146,53 @@ def _convert_to_mp4(input_path: str, output_path: str) -> bool:
         "-y",
         output_path,
     ]
+
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=3600
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
-        return result.returncode == 0
+
+        _, stderr = process.communicate(timeout=7200)
+
+        if process.returncode != 0:
+            logger.error(f"FFmpeg conversion failed: {stderr[-500:]}")
+            return False
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            logger.error("FFmpeg produced empty output")
+            return False
+
+        return True
+
+    except subprocess.TimeoutExpired:
+        process.kill()
+        logger.error("FFmpeg conversion timed out")
+        return False
     except Exception as e:
         logger.error(f"FFmpeg conversion failed: {e}")
+        return False
+
+
+def _convert_audio_to_m4a(input_path: str, output_path: str) -> bool:
+    cmd = [
+        "ffmpeg",
+        "-i",
+        input_path,
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-y",
+        output_path,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        return result.returncode == 0
+    except Exception as e:
+        logger.error(f"Audio conversion failed: {e}")
         return False
 
 
@@ -155,10 +209,36 @@ def download_thumbnail(url: str, output_dir: str) -> Optional[str]:
             if info and info.get("thumbnail"):
                 thumb_url = info["thumbnail"]
                 thumb_path = os.path.join(output_dir, "thumb.jpg")
-                import urllib.request
 
-                urllib.request.urlretrieve(thumb_url, thumb_path)
-                return thumb_path
+                if thumb_url.endswith(".webp"):
+                    webp_path = os.path.join(output_dir, "thumb.webp")
+                    import urllib.request
+                    urllib.request.urlretrieve(thumb_url, webp_path)
+                    _convert_webp_to_jpg(webp_path, thumb_path)
+                    if os.path.exists(webp_path):
+                        os.remove(webp_path)
+                else:
+                    import urllib.request
+                    urllib.request.urlretrieve(thumb_url, thumb_path)
+
+                if os.path.exists(thumb_path):
+                    return thumb_path
     except Exception as e:
         logger.error(f"Failed to download thumbnail: {e}")
     return None
+
+
+def _convert_webp_to_jpg(webp_path: str, jpg_path: str) -> bool:
+    cmd = [
+        "ffmpeg",
+        "-i",
+        webp_path,
+        "-q:v",
+        "2",
+        jpg_path,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=30)
+        return result.returncode == 0
+    except Exception:
+        return False

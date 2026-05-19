@@ -5,6 +5,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 QUALITY_OPTIONS = {
+    "4k": "bestvideo[height<=2160]+bestaudio/best[height<=2160]",
     "1080p": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
     "720p": "bestvideo[height<=720]+bestaudio/best[height<=720]",
     "480p": "bestvideo[height<=480]+bestaudio/best[height<=480]",
@@ -57,7 +58,11 @@ def get_available_qualities(video_info: dict) -> list:
         if h and h > 0:
             heights.add(h)
 
+    max_height = max(heights) if heights else 0
+
     available = []
+    if max_height >= 2160:
+        available.append("4k")
     for label in ["1080p", "720p", "480p", "360p"]:
         h = int(label.replace("p", ""))
         if any(available_h >= h for available_h in heights):

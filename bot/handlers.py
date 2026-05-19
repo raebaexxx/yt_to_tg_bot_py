@@ -183,10 +183,13 @@ async def handle_quality_selection(callback: CallbackQuery, state: FSMContext, b
         await state.clear()
         return
 
-    await callback.message.edit_text("Download complete! Preparing to send...")
+    file_size = os.path.getsize(filepath)
+    await callback.message.edit_text(
+        f"Download complete! Uploading to Telegram...\nSize: {format_file_size(file_size)}"
+    )
 
     try:
-        await _send_video_files(callback.message, filepath, session["title"], session["url"], quality)
+        await _send_video_files(callback.message, filepath, session["title"], session["url"], quality, bot)
     except Exception as e:
         logger.error(f"Failed to send video: {e}")
         await callback.message.answer("Failed to send video. Try again.")
@@ -195,8 +198,44 @@ async def handle_quality_selection(callback: CallbackQuery, state: FSMContext, b
         await state.clear()
 
 
+async def _upload_progress_tracker(
+    bot: Bot,
+    chat_id: int,
+    message_id: int,
+    file_size: int,
+    part_num: int = None,
+    total_parts: int = None,
+):
+    import time
+    start_time = time.time()
+    last_update = 0
+
+    while True:
+        now = time.time()
+        if now - last_update < 2:
+            await asyncio.sleep(0.5)
+            continue
+
+        last_update = now
+        elapsed = now - start_time
+
+        part_info = f"Part {part_num}/{total_parts} " if total_parts and total_parts > 1 else ""
+        text = (
+            f"{part_info}Uploading to Telegram...\n"
+            f"Size: {format_file_size(file_size)}\n"
+            f"Elapsed: {int(elapsed)}s"
+        )
+
+        try:
+            await bot.edit_message_text(text=text, chat_id=chat_id, message_id=message_id)
+        except Exception:
+            pass
+
+        await asyncio.sleep(1)
+
+
 async def _send_video_files(
-    message: Message, filepath: str, title: str, url: str, quality: str
+    message: Message, filepath: str, title: str, url: str, quality: str, bot: Bot
 ):
     user_dir = os.path.dirname(filepath)
     files_to_send = split_video(filepath, user_dir)
@@ -216,14 +255,46 @@ async def _send_video_files(
         file_size = os.path.getsize(file_path)
         caption += f"\nSize: {format_file_size(file_size)}"
 
-        video_file = FSInputFile(file_path)
-        thumb_file = FSInputFile(thumb_path) if thumb_path and os.path.exists(thumb_path) else None
-
-        await message.answer_video(
-            video=video_file,
-            caption=caption,
-            thumbnail=thumb_file,
+        progress_msg = await message.answer(
+            f"Uploading{' part ' + str(i) + '/' + str(total) if total > 1 else ''}...\nSize: {format_file_size(file_size)}"
         )
+
+        tracker_task = asyncio.create_task(
+            _upload_progress_tracker(
+                bot,
+                progress_msg.chat.id,
+                progress_msg.message_id,
+                file_size,
+                part_num=i if total > 1 else None,
+                total_parts=total if total > 1 else None,
+            )
+        )
+
+        try:
+            video_file = FSInputFile(file_path)
+            thumb_file = FSInputFile(thumb_path) if thumb_path and os.path.exists(thumb_path) else None
+
+            await message.answer_video(
+                video=video_file,
+                caption=caption,
+                thumbnail=thumb_file,
+            )
+
+            tracker_task.cancel()
+            try:
+                await tracker_task
+            except asyncio.CancelledError:
+                pass
+
+            await progress_msg.delete()
+
+        except Exception:
+            tracker_task.cancel()
+            try:
+                await tracker_task
+            except asyncio.CancelledError:
+                pass
+            raise
 
     await add_history(message.from_user.id, url, title, quality)
     await message.answer("Done! Send another link if you want.")
@@ -355,9 +426,13 @@ async def handle_download_all(callback: CallbackQuery, state: FSMContext, bot: B
         )
 
         if filepath and os.path.exists(filepath):
+            file_size = os.path.getsize(filepath)
+            await progress_msg.edit_text(
+                f"Download complete! Uploading to Telegram...\nSize: {format_file_size(file_size)}"
+            )
             try:
                 await _send_video_files(
-                    callback.message, filepath, video_title, video_url, quality
+                    callback.message, filepath, video_title, video_url, quality, bot
                 )
                 success_count += 1
             except Exception as e:
@@ -421,9 +496,14 @@ async def handle_playlist_quality_selection(
         await state.clear()
         return
 
+    file_size = os.path.getsize(filepath)
+    await callback.message.edit_text(
+        f"Download complete! Uploading to Telegram...\nSize: {format_file_size(file_size)}"
+    )
+
     try:
         await _send_video_files(
-            callback.message, filepath, video_title, video_url, quality
+            callback.message, filepath, video_title, video_url, quality, bot
         )
     except Exception as e:
         logger.error(f"Failed to send video: {e}")

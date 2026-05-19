@@ -4,6 +4,7 @@ from services.youtube import QUALITY_OPTIONS
 
 def get_quality_keyboard(available_qualities: list, url: str = None) -> InlineKeyboardMarkup:
     quality_labels = {
+        "4k": "4K (2160p)",
         "1080p": "1080p (Full HD)",
         "720p": "720p (HD)",
         "480p": "480p",
