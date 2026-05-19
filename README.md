@@ -14,6 +14,32 @@ Telegram bot that downloads videos from YouTube and sends them directly to Teleg
 
 - Python 3.10+
 - FFmpeg (required for video conversion and splitting)
+- **Local Bot API Server** (required for videos >50MB)
+
+## Local Bot API Server
+
+Telegram Bot API has a **50MB upload limit** by default. To send videos up to 2GB, you must run a [local Bot API Server](https://core.telegram.org/bots/api#using-a-local-bot-api-server).
+
+### Run via Docker (recommended)
+
+```bash
+# Pull the official Telegram Bot API image
+docker pull aiogram/telegram-bot-api:latest
+
+# Start the server
+docker run -p 8081:8081 -e TELEGRAM_API_ID=YOUR_API_ID -e TELEGRAM_API_HASH=YOUR_API_HASH aiogram/telegram-bot-api:latest
+```
+
+Get `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` at https://my.telegram.org
+
+Then set in `.env`:
+```
+BOT_API_SERVER_URL=http://localhost:8081
+```
+
+### Without local server
+
+Videos under 50MB will work without a local server. Larger videos will fail with "Request Entity Too Large".
 
 ## Installation
 
@@ -54,6 +80,7 @@ docker run --env-file .env yt-tg-bot
 | Variable | Description | Default |
 |---|---|---|
 | `BOT_TOKEN` | Telegram bot token from @BotFather | Required |
+| `BOT_API_SERVER_URL` | Local Bot API Server URL (for videos >50MB) | None |
 | `MAX_FILE_SIZE_MB` | Maximum file size before splitting (MB) | 1900 |
 | `DOWNLOAD_DIR` | Directory for temporary downloads | ./downloads |
 | `LOG_LEVEL` | Logging level | INFO |
