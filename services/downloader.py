@@ -34,9 +34,31 @@ class ProgressHook:
             )
         elif d["status"] == "finished":
             asyncio.run_coroutine_threadsafe(
-                self.bot.edit_message_text(text="Download complete, converting to phone-compatible format...", chat_id=self.chat_id, message_id=self.message_id),
+                self.bot.edit_message_text(text="Download complete!", chat_id=self.chat_id, message_id=self.message_id),
                 self.loop,
             )
+
+
+def _build_format_string(quality: str) -> tuple:
+    if quality == "audio":
+        return "bestaudio[acodec^=mp4a]/bestaudio", True
+
+    height_map = {
+        "4k": 2160,
+        "1080p": 1080,
+        "720p": 720,
+        "480p": 480,
+        "360p": 360,
+    }
+    h = height_map.get(quality, 720)
+
+    native_mp4 = (
+        f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio[acodec^=mp4a]/"
+        f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio/"
+        f"best[height<={h}][ext=mp4]/"
+        f"best[height<={h}]"
+    )
+    return native_mp4, False
 
 
 async def download_video(
@@ -52,12 +74,7 @@ async def download_video(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    from services.youtube import QUALITY_OPTIONS
-
-    if quality == "audio":
-        format_str = "bestaudio"
-    else:
-        format_str = QUALITY_OPTIONS[quality]
+    format_str, is_audio = _build_format_string(quality)
 
     filename = sanitize_filename("video")
     output_template = os.path.join(output_dir, f"{filename}.%(ext)s")
@@ -75,8 +92,8 @@ async def download_video(
         "retries": 3,
     }
 
-    if quality != "audio":
-        ydl_opts["merge_output_format"] = "mkv"
+    if not is_audio:
+        ydl_opts["merge_output_format"] = "mp4"
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -86,7 +103,7 @@ async def download_video(
 
             downloaded = ydl.prepare_filename(info)
             if not os.path.exists(downloaded):
-                for ext_check in ["mkv", "webm", "mp4", "m4a"]:
+                for ext_check in ["mp4", "mkv", "webm", "m4a"]:
                     potential = os.path.join(
                         output_dir, f"{filename}.{ext_check}"
                     )
@@ -98,15 +115,7 @@ async def download_video(
                 logger.error(f"Downloaded file not found: {downloaded}")
                 return None
 
-            mp4_path = os.path.join(output_dir, f"{filename}.mp4")
-            if quality != "audio":
-                if not _convert_to_phone_mp4(downloaded, mp4_path, bot, chat_id, message_id):
-                    logger.error("Failed to convert video to phone-compatible format")
-                    return None
-                if os.path.exists(mp4_path):
-                    os.remove(downloaded)
-                return mp4_path
-            else:
+            if is_audio:
                 if not downloaded.endswith(".m4a"):
                     m4a_path = os.path.join(output_dir, f"{filename}.m4a")
                     _convert_audio_to_m4a(downloaded, m4a_path)
@@ -115,36 +124,55 @@ async def download_video(
                         return m4a_path
                 return downloaded
 
+            if downloaded.endswith(".mp4"):
+                if _is_h264_mp4(downloaded):
+                    logger.info(f"Video already in H.264 MP4 format, no conversion needed: {downloaded}")
+                    return downloaded
+
+            mp4_path = os.path.join(output_dir, f"{filename}.mp4")
+            if not _convert_to_phone_mp4(downloaded, mp4_path):
+                logger.error("Failed to convert video to phone-compatible format")
+                return None
+            if os.path.exists(mp4_path):
+                os.remove(downloaded)
+            return mp4_path
+
     except Exception as e:
         logger.error(f"Failed to download video: {e}")
         return None
 
 
-def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None) -> bool:
+def _is_h264_mp4(filepath: str) -> bool:
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name",
+        "-of", "csv=p=0",
+        filepath,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        codec = result.stdout.strip()
+        return codec in ("h264", "avc1")
+    except Exception:
+        return False
+
+
+def _convert_to_phone_mp4(input_path: str, output_path: str) -> bool:
     cmd = [
         "ffmpeg",
-        "-i",
-        input_path,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "medium",
-        "-crf",
-        "23",
-        "-profile:v",
-        "high",
-        "-level",
-        "4.0",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        "-movflags",
-        "+faststart",
-        "-y",
-        output_path,
+        "-i", input_path,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "22",
+        "-profile:v", "high",
+        "-level", "4.0",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-y", output_path,
     ]
 
     try:
@@ -154,7 +182,6 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
             stderr=subprocess.PIPE,
             text=True,
         )
-
         _, stderr = process.communicate(timeout=7200)
 
         if process.returncode != 0:
@@ -179,14 +206,10 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
 def _convert_audio_to_m4a(input_path: str, output_path: str) -> bool:
     cmd = [
         "ffmpeg",
-        "-i",
-        input_path,
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        "-y",
-        output_path,
+        "-i", input_path,
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-y", output_path,
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
@@ -231,10 +254,8 @@ def download_thumbnail(url: str, output_dir: str) -> Optional[str]:
 def _convert_webp_to_jpg(webp_path: str, jpg_path: str) -> bool:
     cmd = [
         "ffmpeg",
-        "-i",
-        webp_path,
-        "-q:v",
-        "2",
+        "-i", webp_path,
+        "-q:v", "2",
         jpg_path,
     ]
     try:
