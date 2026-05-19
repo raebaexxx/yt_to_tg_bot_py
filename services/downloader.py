@@ -137,6 +137,7 @@ async def download_video(
     message_id: int,
     output_dir: str = None,
     cancel_ctx: Optional[DownloadContext] = None,
+    is_ios: bool = False,
 ) -> Optional[tuple]:
     if output_dir is None:
         output_dir = DOWNLOAD_DIR
@@ -231,20 +232,30 @@ async def download_video(
                     return (downloaded, width, height)
 
             if quality == "4k":
-                logger.info("4K video — converting to HEVC (H.265) for iPhone compatibility")
-                mp4_path = os.path.join(output_dir, f"{filename}_hevc.mp4")
-                if not _convert_to_hevc(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
-                    logger.warning("HEVC conversion failed, falling back to remux")
+                if is_ios:
+                    logger.info("4K video — iPhone user, converting to HEVC 1080p")
+                    mp4_path = os.path.join(output_dir, f"{filename}_hevc.mp4")
+                    if not _convert_to_hevc_1080p(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
+                        logger.warning("HEVC conversion failed, falling back to remux")
+                        mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
+                        if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
+                            os.remove(downloaded)
+                            w2, h2 = _get_video_info(mp4_path)
+                            return (mp4_path, w2, h2)
+                        else:
+                            return (downloaded, width, height)
+                    else:
+                        os.remove(downloaded)
+                        return (mp4_path, width, height)
+                else:
+                    logger.info("4K video — PC/Android user, remux with faststart only (no codec conversion)")
                     mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
                     if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
                         os.remove(downloaded)
-                        w2, h2 = _get_video_info(mp4_path)
-                        return (mp4_path, w2, h2)
+                        return (mp4_path, width, height)
                     else:
+                        logger.warning("Faststart failed, sending original file")
                         return (downloaded, width, height)
-                else:
-                    os.remove(downloaded)
-                    return (mp4_path, width, height)
 
             logger.info(f"Video codec {video_codec} requires conversion to H.264")
             mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
@@ -452,7 +463,7 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
         return False
 
 
-def _convert_to_hevc(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None, cancel_ctx: Optional[DownloadContext] = None) -> bool:
+def _convert_to_hevc_1080p(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None, cancel_ctx: Optional[DownloadContext] = None) -> bool:
     time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
     duration_pattern = re.compile(r"Duration: (\d+):(\d+):(\d+\.\d+)")
 
@@ -462,6 +473,7 @@ def _convert_to_hevc(input_path: str, output_path: str, bot=None, chat_id=None, 
         "-c:v", "libx265",
         "-preset", "ultrafast",
         "-crf", "28",
+        "-vf", "scale=-1:1080",
         "-pix_fmt", "yuv420p",
         "-tag:v", "hvc1",
         "-c:a", "aac",
@@ -470,7 +482,7 @@ def _convert_to_hevc(input_path: str, output_path: str, bot=None, chat_id=None, 
         "-y", output_path,
     ]
 
-    logger.info(f"Starting HEVC (H.265) conversion for 4K")
+    logger.info(f"Starting 4K to HEVC 1080p conversion")
     logger.info(f"Command: {' '.join(cmd)}")
 
     try:
@@ -513,7 +525,7 @@ def _convert_to_hevc(input_path: str, output_path: str, bot=None, chat_id=None, 
                     speed = current_time / elapsed if elapsed > 0 else 0
                     percent = int((current_time / total_duration) * 100) if total_duration else 0
 
-                    msg = f"Converting 4K to HEVC: {percent}% (speed: {speed:.1f}x)"
+                    msg = f"Converting 4K to HEVC 1080p: {percent}% (speed: {speed:.1f}x)"
                     logger.info(msg)
 
                     if bot and chat_id and message_id and loop:

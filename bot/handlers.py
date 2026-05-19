@@ -12,6 +12,7 @@ from bot.states import VideoDownload, PlaylistDownload
 from bot.keyboards import (
     get_quality_keyboard,
     get_playlist_keyboard,
+    get_device_keyboard,
     get_cancel_keyboard,
 )
 from services.youtube import (
@@ -197,6 +198,22 @@ async def handle_quality_selection(callback: CallbackQuery, state: FSMContext, b
         await callback.answer("Session expired. Send the link again.")
         return
 
+    if quality == "4k":
+        session["pending_quality"] = quality
+        _set_session(callback.from_user.id, session)
+        await state.set_state(VideoDownload.selecting_device)
+
+        await callback.message.edit_text(
+            f"<b>{sanitize_filename(session['title'])}</b>\n\n"
+            f"4K video detected. Choose your device for optimal playback:\n\n"
+            f"• <b>PC / Android</b> — instant, no conversion (AV1 codec)\n"
+            f"• <b>iPhone / iOS</b> — converted to HEVC 1080p (~10-20 min)",
+            reply_markup=get_device_keyboard(session["url"], quality),
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
     await callback.message.edit_text(
         f"Selected quality: {quality}\nStarting download..."
     )
@@ -218,6 +235,65 @@ async def handle_quality_selection(callback: CallbackQuery, state: FSMContext, b
         message_id=callback.message.message_id,
         output_dir=user_dir,
         cancel_ctx=dl_ctx,
+    )
+
+    active_downloads.pop(callback.from_user.id, None)
+
+    if not filepath or not os.path.exists(filepath[0]):
+        await callback.message.edit_text("Download failed. Try again later.")
+        cleanup_user_session(user_dir)
+        await state.clear()
+        return
+
+    filepath, width, height = filepath
+    file_size = os.path.getsize(filepath)
+    await callback.message.edit_text(
+        f"Download complete! Uploading to Telegram...\nSize: {format_file_size(file_size)}"
+    )
+
+    try:
+        await _send_video_files(callback.message, filepath, session["title"], session["url"], quality, bot, width, height)
+    except Exception as e:
+        logger.error(f"Failed to send video: {e}")
+        await callback.message.answer("Failed to send video. Try again.")
+    finally:
+        cleanup_user_session(user_dir)
+        await state.clear()
+
+
+@router.callback_query(F.data.startswith("device_"), VideoDownload.selecting_device)
+async def handle_device_selection(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    parts = callback.data.split("_")
+    device = parts[1]
+    quality = parts[2]
+    session = _get_session(callback.from_user.id)
+
+    if not session:
+        await callback.answer("Session expired. Send the link again.")
+        return
+
+    await callback.message.edit_text(
+        f"Selected: {quality} for {'iPhone' if device == 'ios' else 'PC/Android'}\nStarting download..."
+    )
+    await callback.answer()
+
+    await state.set_state(VideoDownload.downloading)
+
+    user_dir = os.path.join(DOWNLOAD_DIR, str(callback.from_user.id))
+    os.makedirs(user_dir, exist_ok=True)
+
+    dl_ctx = DownloadContext()
+    active_downloads[callback.from_user.id] = dl_ctx
+
+    filepath = await download_video(
+        session["url"],
+        quality,
+        bot=bot,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        output_dir=user_dir,
+        cancel_ctx=dl_ctx,
+        is_ios=(device == "ios"),
     )
 
     active_downloads.pop(callback.from_user.id, None)
@@ -532,6 +608,22 @@ async def handle_playlist_quality_selection(
         await callback.answer("No video selected.")
         return
 
+    if quality == "4k":
+        session["pending_quality"] = quality
+        _set_session(callback.from_user.id, session)
+        await state.set_state(PlaylistDownload.selecting_device)
+
+        await callback.message.edit_text(
+            f"<b>{sanitize_filename(video_title)}</b>\n\n"
+            f"4K video detected. Choose your device for optimal playback:\n\n"
+            f"• <b>PC / Android</b> — instant, no conversion (AV1 codec)\n"
+            f"• <b>iPhone / iOS</b> — converted to HEVC 1080p (~10-20 min)",
+            reply_markup=get_device_keyboard(video_url, quality),
+            parse_mode="HTML",
+        )
+        await callback.answer()
+        return
+
     await callback.message.edit_text(
         f"Selected quality: {quality}\nStarting download..."
     )
@@ -553,6 +645,76 @@ async def handle_playlist_quality_selection(
         message_id=callback.message.message_id,
         output_dir=user_dir,
         cancel_ctx=dl_ctx,
+    )
+
+    active_downloads.pop(callback.from_user.id, None)
+
+    if not filepath or not os.path.exists(filepath[0]):
+        await callback.message.edit_text("Download failed.")
+        cleanup_user_session(user_dir)
+        await state.clear()
+        return
+
+    filepath, width, height = filepath
+    file_size = os.path.getsize(filepath)
+    await callback.message.edit_text(
+        f"Download complete! Uploading to Telegram...\nSize: {format_file_size(file_size)}"
+    )
+
+    try:
+        await _send_video_files(
+            callback.message, filepath, video_title, video_url, quality, bot, width, height
+        )
+    except Exception as e:
+        logger.error(f"Failed to send video: {e}")
+        await callback.message.answer("Failed to send video.")
+    finally:
+        cleanup_user_session(user_dir)
+        await state.clear()
+
+
+@router.callback_query(F.data.startswith("device_"), PlaylistDownload.selecting_device)
+async def handle_playlist_device_selection(
+    callback: CallbackQuery, state: FSMContext, bot: Bot
+):
+    parts = callback.data.split("_")
+    device = parts[1]
+    quality = parts[2]
+    session = _get_session(callback.from_user.id)
+
+    if not session:
+        await callback.answer("Session expired.")
+        return
+
+    video_url = session.get("selected_video_url")
+    video_title = session.get("selected_video_title", "Unknown")
+
+    if not video_url:
+        await callback.answer("No video selected.")
+        return
+
+    await callback.message.edit_text(
+        f"Selected: {quality} for {'iPhone' if device == 'ios' else 'PC/Android'}\nStarting download..."
+    )
+    await callback.answer()
+
+    await state.set_state(PlaylistDownload.downloading)
+
+    user_dir = os.path.join(DOWNLOAD_DIR, str(callback.from_user.id))
+    os.makedirs(user_dir, exist_ok=True)
+
+    dl_ctx = DownloadContext()
+    active_downloads[callback.from_user.id] = dl_ctx
+
+    filepath = await download_video(
+        video_url,
+        quality,
+        bot=bot,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        output_dir=user_dir,
+        cancel_ctx=dl_ctx,
+        is_ios=(device == "ios"),
     )
 
     active_downloads.pop(callback.from_user.id, None)

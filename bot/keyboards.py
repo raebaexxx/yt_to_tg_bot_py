@@ -74,6 +74,32 @@ def get_playlist_keyboard(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def get_device_keyboard(url: str = None, quality: str = "4k") -> InlineKeyboardMarkup:
+    url_hash = hashlib.md5(url.encode()).hexdigest()[:6] if url else ""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="PC / Android",
+                    callback_data=f"device_pc_{quality}_{url_hash}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="iPhone / iOS",
+                    callback_data=f"device_ios_{quality}_{url_hash}",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Cancel",
+                    callback_data="cancel",
+                )
+            ],
+        ]
+    )
+
+
 def get_cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
