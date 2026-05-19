@@ -9,7 +9,6 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import ClientTimeout
 
 from config import BOT_TOKEN, BOT_API_SERVER_URL, LOG_LEVEL
 from database.models import init_db
@@ -22,7 +21,7 @@ logging.basicConfig(
 
 storage = MemoryStorage()
 
-LONG_TIMEOUT = ClientTimeout(total=3600, connect=30, sock_read=3600)
+LONG_TIMEOUT = 3600.0
 
 
 async def main():
