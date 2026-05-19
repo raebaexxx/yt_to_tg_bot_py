@@ -331,6 +331,7 @@ async def _upload_progress_tracker(
 ):
     start_time = time.time()
     last_update = 0
+    last_bytes = 0
 
     try:
         while not stop_event.is_set():
@@ -343,10 +344,37 @@ async def _upload_progress_tracker(
             elapsed = now - start_time
 
             part_info = f"Part {part_num}/{total_parts} " if total_parts and total_parts > 1 else ""
+            total_str = format_file_size(file_size)
+
+            speed_str = "calculating..."
+            eta_str = "calculating..."
+            percent_str = "0%"
+
+            if elapsed > 3:
+                speed = file_size / elapsed if elapsed > 0 else 0
+                speed_str = f"{format_file_size(int(speed))}/s"
+
+                if speed > 0:
+                    remaining_bytes = max(0, file_size - last_bytes)
+                    eta_seconds = remaining_bytes / speed
+                    if eta_seconds < 60:
+                        eta_str = f"{int(eta_seconds)}s"
+                    elif eta_seconds < 3600:
+                        eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+                    else:
+                        eta_str = f"{int(eta_seconds // 3600)}h {int((eta_seconds % 3600) // 60)}m"
+
+                uploaded = min(file_size, int(speed * elapsed))
+                percent = int((uploaded / file_size) * 100) if file_size > 0 else 0
+                percent_str = f"{percent}%"
+                last_bytes = uploaded
+
             text = (
                 f"{part_info}Uploading to Telegram...\n"
-                f"Size: {format_file_size(file_size)}\n"
-                f"Elapsed: {int(elapsed)}s"
+                f"Progress: {percent_str}\n"
+                f"Total: {total_str}\n"
+                f"Speed: {speed_str}\n"
+                f"ETA: {eta_str}"
             )
 
             await safe_edit_text(bot, chat_id, message_id, text)

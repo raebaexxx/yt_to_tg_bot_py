@@ -48,6 +48,7 @@ class ProgressHook:
         self.last_update = 0
         self._edit_task = None
         self.cancel_ctx = cancel_ctx
+        self.total_bytes = 0
 
     def _safe_edit(self, text):
         async def _do_edit():
@@ -73,9 +74,27 @@ class ProgressHook:
             if now - self.last_update < 2:
                 return
             self.last_update = now
+
+            downloaded = d.get("downloaded_bytes", 0)
+            total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
             percent = d.get("_percent_str", "0%")
             speed = d.get("_speed_str", "N/A")
-            text = f"Downloading: {percent} at {speed}"
+            eta = d.get("_eta_str", "?")
+
+            if total and total > self.total_bytes:
+                self.total_bytes = total
+
+            remaining = ""
+            if self.total_bytes > 0 and downloaded > 0:
+                remaining_bytes = self.total_bytes - downloaded
+                remaining = f"\nRemaining: {format_file_size(remaining_bytes)}"
+
+            text = (
+                f"Downloading: {percent}\n"
+                f"Speed: {speed}\n"
+                f"Total: {format_file_size(self.total_bytes)}{remaining}\n"
+                f"ETA: {eta}"
+            )
             self._safe_edit(text)
         elif d["status"] == "finished":
             self._safe_edit("Download complete!")
@@ -346,8 +365,19 @@ def _add_faststart(input_path: str, output_path: str, bot=None, chat_id=None, me
 
             now = time.time()
             if now - last_update >= 2 and bot and chat_id and message_id and loop:
-                elapsed = int(now - start_time)
-                msg = f"Preparing video for streaming... ({elapsed}s)"
+                elapsed = now - start_time
+                current_size = 0
+                if os.path.exists(output_path):
+                    try:
+                        current_size = os.path.getsize(output_path)
+                    except OSError:
+                        pass
+
+                msg = (
+                    f"Preparing video for streaming...\n"
+                    f"Elapsed: {int(elapsed)}s\n"
+                    f"Output: {format_file_size(current_size)}"
+                )
                 logger.info(msg)
                 _safe_edit_text(bot, chat_id, message_id, msg, loop)
                 last_update = now
@@ -432,7 +462,29 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
                     speed = current_time / elapsed if elapsed > 0 else 0
                     percent = int((current_time / total_duration) * 100) if total_duration else 0
 
-                    msg = f"Converting: {percent}% (speed: {speed:.1f}x)"
+                    remaining_time = ""
+                    if speed > 0 and total_duration:
+                        remaining_seconds = (total_duration - current_time) / speed
+                        if remaining_seconds < 60:
+                            remaining_time = f"\nRemaining: {int(remaining_seconds)}s"
+                        elif remaining_seconds < 3600:
+                            remaining_time = f"\nRemaining: {int(remaining_seconds // 60)}m {int(remaining_seconds % 60)}s"
+                        else:
+                            remaining_time = f"\nRemaining: {int(remaining_seconds // 3600)}h {int((remaining_seconds % 3600) // 60)}m"
+
+                    current_size = 0
+                    if os.path.exists(output_path):
+                        try:
+                            current_size = os.path.getsize(output_path)
+                        except OSError:
+                            pass
+
+                    msg = (
+                        f"Converting: {percent}%\n"
+                        f"Speed: {speed:.1f}x\n"
+                        f"Input: {format_file_size(input_size)}\n"
+                        f"Output: {format_file_size(current_size)}{remaining_time}"
+                    )
                     logger.info(msg)
 
                     if bot and chat_id and message_id and loop:
@@ -525,7 +577,29 @@ def _convert_to_hevc_1080p(input_path: str, output_path: str, bot=None, chat_id=
                     speed = current_time / elapsed if elapsed > 0 else 0
                     percent = int((current_time / total_duration) * 100) if total_duration else 0
 
-                    msg = f"Converting 4K to HEVC 1080p: {percent}% (speed: {speed:.1f}x)"
+                    remaining_time = ""
+                    if speed > 0 and total_duration:
+                        remaining_seconds = (total_duration - current_time) / speed
+                        if remaining_seconds < 60:
+                            remaining_time = f"\nRemaining: {int(remaining_seconds)}s"
+                        elif remaining_seconds < 3600:
+                            remaining_time = f"\nRemaining: {int(remaining_seconds // 60)}m {int(remaining_seconds % 60)}s"
+                        else:
+                            remaining_time = f"\nRemaining: {int(remaining_seconds // 3600)}h {int((remaining_seconds % 3600) // 60)}m"
+
+                    current_size = 0
+                    if os.path.exists(output_path):
+                        try:
+                            current_size = os.path.getsize(output_path)
+                        except OSError:
+                            pass
+
+                    msg = (
+                        f"Converting 4K to HEVC 1080p: {percent}%\n"
+                        f"Speed: {speed:.1f}x\n"
+                        f"Input: {format_file_size(input_size)}\n"
+                        f"Output: {format_file_size(current_size)}{remaining_time}"
+                    )
                     logger.info(msg)
 
                     if bot and chat_id and message_id and loop:
