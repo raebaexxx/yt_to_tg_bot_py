@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import BOT_TOKEN, BOT_API_SERVER_URL, LOG_LEVEL
@@ -24,10 +25,12 @@ storage = MemoryStorage()
 async def main():
     await init_db()
 
-    session = AiohttpSession()
     if BOT_API_SERVER_URL:
-        session.api_url = f"{BOT_API_SERVER_URL}/bot{{token}}/{{method}}"
+        local_server = TelegramAPIServer.from_base(BOT_API_SERVER_URL)
+        session = AiohttpSession(api=local_server)
         logging.info(f"Using local Bot API Server: {BOT_API_SERVER_URL}")
+    else:
+        session = AiohttpSession()
 
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher(storage=storage)
