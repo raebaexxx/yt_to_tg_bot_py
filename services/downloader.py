@@ -188,10 +188,10 @@ async def download_video(
                     return (downloaded, width, height)
 
             if quality == "4k":
-                logger.info("4K video — downscaling to 1080p H.264 for fast conversion")
+                logger.info("4K video — converting AV1/VP9 to H.264")
                 mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
-                if not _convert_4k_to_1080p(downloaded, mp4_path, bot, chat_id, message_id, loop):
-                    logger.error("Failed to convert 4K to 1080p H.264")
+                if not _convert_4k_to_h264(downloaded, mp4_path, bot, chat_id, message_id, loop):
+                    logger.error("Failed to convert 4K to H.264")
                     return None
                 if os.path.exists(mp4_path):
                     os.remove(downloaded)
@@ -327,8 +327,6 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "28",
-        "-profile:v", "high",
-        "-level", "4.0",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "128k",
@@ -405,20 +403,16 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
         return False
 
 
-def _convert_4k_to_1080p(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None) -> bool:
+def _convert_4k_to_h264(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None) -> bool:
     time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
     duration_pattern = re.compile(r"Duration: (\d+):(\d+):(\d+\.\d+)")
 
     cmd = [
         "ffmpeg",
-        "-threads", "0",
         "-i", input_path,
         "-c:v", "libx264",
         "-preset", "ultrafast",
-        "-tune", "fastdecode",
         "-crf", "30",
-        "-profile:v", "high",
-        "-level", "5.2",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "128k",
@@ -464,7 +458,7 @@ def _convert_4k_to_1080p(input_path: str, output_path: str, bot=None, chat_id=No
                     speed = current_time / elapsed if elapsed > 0 else 0
                     percent = int((current_time / total_duration) * 100) if total_duration else 0
 
-                    msg = f"Converting 4K to H.264: {percent}% (speed: {speed:.1f}x)"
+                    msg = f"Converting 4K: {percent}% (speed: {speed:.1f}x)"
                     logger.info(msg)
 
                     if bot and chat_id and message_id and loop:
