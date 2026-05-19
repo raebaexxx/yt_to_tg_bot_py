@@ -181,6 +181,18 @@ async def download_video(
                     width, height = _get_video_dimensions(downloaded)
                     return (downloaded, width, height)
 
+            if quality == "4k":
+                logger.info("4K video — remux with faststart only (no re-encode)")
+                mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
+                if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop):
+                    os.remove(downloaded)
+                    width, height = _get_video_dimensions(mp4_path)
+                    return (mp4_path, width, height)
+                else:
+                    logger.warning("Faststart failed, sending original file")
+                    width, height = _get_video_dimensions(downloaded)
+                    return (downloaded, width, height)
+
             logger.info(f"Video codec {video_codec} requires conversion to H.264")
             mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
             if not _convert_to_phone_mp4(downloaded, mp4_path, bot, chat_id, message_id, loop):
