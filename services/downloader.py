@@ -4,6 +4,7 @@ import yt_dlp
 import subprocess
 import logging
 import time
+import re
 from typing import Optional
 from config import DOWNLOAD_DIR
 from utils.helpers import sanitize_filename, format_file_size
@@ -124,10 +125,18 @@ async def download_video(
                         return m4a_path
                 return downloaded
 
-            if downloaded.endswith(".mp4"):
-                if _is_h264_mp4(downloaded):
-                    logger.info(f"Video already in H.264 MP4 format, no conversion needed: {downloaded}")
-                    return downloaded
+            video_codec = _get_video_codec(downloaded)
+            logger.info(f"Video codec: {video_codec}, ext: {os.path.splitext(downloaded)[1]}")
+
+            if video_codec in ("h264", "avc1"):
+                if downloaded.endswith(".mp4"):
+                    logger.info(f"Video already H.264 MP4, just adding faststart flag")
+                    mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
+                    if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop):
+                        os.remove(downloaded)
+                        return mp4_path
+                    else:
+                        return downloaded
 
             mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
             if not _convert_to_phone_mp4(downloaded, mp4_path, bot, chat_id, message_id, loop):
@@ -142,7 +151,7 @@ async def download_video(
         return None
 
 
-def _is_h264_mp4(filepath: str) -> bool:
+def _get_video_codec(filepath: str) -> Optional[str]:
     cmd = [
         "ffprobe",
         "-v", "error",
@@ -153,21 +162,77 @@ def _is_h264_mp4(filepath: str) -> bool:
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        codec = result.stdout.strip()
-        return codec in ("h264", "avc1")
+        return result.stdout.strip()
     except Exception:
+        return None
+
+
+def _add_faststart(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None) -> bool:
+    cmd = [
+        "ffmpeg",
+        "-i", input_path,
+        "-c", "copy",
+        "-movflags", "+faststart",
+        "-y", output_path,
+    ]
+
+    logger.info(f"Adding faststart flag (no re-encode): {' '.join(cmd)}")
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        start_time = time.time()
+        last_update = 0
+
+        for line in process.stderr:
+            line_str = line.strip()
+            now = time.time()
+            if now - last_update >= 2:
+                elapsed = int(now - start_time)
+                msg = f"Preparing video for streaming... ({elapsed}s)"
+                logger.info(msg)
+
+                if bot and chat_id and message_id and loop:
+                    asyncio.run_coroutine_threadsafe(
+                        bot.edit_message_text(text=msg, chat_id=chat_id, message_id=message_id),
+                        loop,
+                    )
+                last_update = now
+
+        process.wait(timeout=300)
+
+        if process.returncode != 0:
+            logger.error(f"Faststart failed")
+            return False
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            return False
+
+        input_size = os.path.getsize(input_path)
+        output_size = os.path.getsize(output_path)
+        logger.info(f"Faststart complete: {format_file_size(input_size)} -> {format_file_size(output_size)}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Faststart failed: {e}")
         return False
 
 
 def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None) -> bool:
-    import re
+    time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
+    duration_pattern = re.compile(r"Duration: (\d+):(\d+):(\d+\.\d+)")
 
     cmd = [
         "ffmpeg",
         "-i", input_path,
         "-c:v", "libx264",
         "-preset", "ultrafast",
-        "-crf", "22",
+        "-crf", "28",
         "-profile:v", "high",
         "-level", "4.0",
         "-pix_fmt", "yuv420p",
@@ -191,16 +256,11 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
         start_time = time.time()
         last_update = 0
         total_duration = None
-        time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
-        duration_pattern = re.compile(r"Duration: (\d+):(\d+):(\d+\.\d+)")
+        stderr_lines = []
 
-        while True:
-            line = process.stderr.readline()
-            if not line:
-                break
-
+        for line in process.stderr:
             line_str = line.strip()
-            logger.debug(f"FFmpeg: {line_str}")
+            stderr_lines.append(line_str)
 
             if total_duration is None:
                 dur_match = duration_pattern.search(line_str)
@@ -230,10 +290,10 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
 
                     last_update = now
 
-        _, stderr = process.communicate(timeout=7200)
+        process.wait(timeout=7200)
 
         if process.returncode != 0:
-            logger.error(f"FFmpeg conversion failed: {stderr[-500:]}")
+            logger.error(f"FFmpeg conversion failed: {' '.join(stderr_lines[-5:])}")
             return False
 
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
