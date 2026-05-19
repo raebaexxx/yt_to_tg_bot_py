@@ -231,14 +231,20 @@ async def download_video(
                     return (downloaded, width, height)
 
             if quality == "4k":
-                logger.info("4K video -- remux with faststart only (no codec conversion)")
-                mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
-                if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
+                logger.info("4K video — converting to HEVC (H.265) for iPhone compatibility")
+                mp4_path = os.path.join(output_dir, f"{filename}_hevc.mp4")
+                if not _convert_to_hevc(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
+                    logger.warning("HEVC conversion failed, falling back to remux")
+                    mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
+                    if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
+                        os.remove(downloaded)
+                        w2, h2 = _get_video_info(mp4_path)
+                        return (mp4_path, w2, h2)
+                    else:
+                        return (downloaded, width, height)
+                else:
                     os.remove(downloaded)
                     return (mp4_path, width, height)
-                else:
-                    logger.warning("Faststart failed, sending original file")
-                    return (downloaded, width, height)
 
             logger.info(f"Video codec {video_codec} requires conversion to H.264")
             mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
@@ -443,6 +449,98 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
         return False
     except Exception as e:
         logger.error(f"FFmpeg conversion failed: {e}")
+        return False
+
+
+def _convert_to_hevc(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None, cancel_ctx: Optional[DownloadContext] = None) -> bool:
+    time_pattern = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
+    duration_pattern = re.compile(r"Duration: (\d+):(\d+):(\d+\.\d+)")
+
+    cmd = [
+        "ffmpeg",
+        "-i", input_path,
+        "-c:v", "libx265",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-pix_fmt", "yuv420p",
+        "-tag:v", "hvc1",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-y", output_path,
+    ]
+
+    logger.info(f"Starting HEVC (H.265) conversion for 4K")
+    logger.info(f"Command: {' '.join(cmd)}")
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+        input_size = os.path.getsize(input_path)
+        start_time = time.time()
+        last_update = 0
+        total_duration = None
+
+        for line in process.stdout:
+            if cancel_ctx and cancel_ctx.is_cancelled:
+                process.kill()
+                logger.info("HEVC conversion cancelled by user")
+                return False
+
+            line_str = line.strip()
+            logger.debug(f"FFmpeg HEVC: {line_str}")
+
+            if total_duration is None:
+                dur_match = duration_pattern.search(line_str)
+                if dur_match:
+                    h, m, s = dur_match.groups()
+                    total_duration = int(h) * 3600 + int(m) * 60 + float(s)
+                    logger.info(f"Video duration: {total_duration:.1f}s")
+
+            time_match = time_pattern.search(line_str)
+            if time_match:
+                now = time.time()
+                if now - last_update >= 2:
+                    h, m, s = time_match.groups()
+                    current_time = int(h) * 3600 + int(m) * 60 + float(s)
+
+                    elapsed = now - start_time
+                    speed = current_time / elapsed if elapsed > 0 else 0
+                    percent = int((current_time / total_duration) * 100) if total_duration else 0
+
+                    msg = f"Converting 4K to HEVC: {percent}% (speed: {speed:.1f}x)"
+                    logger.info(msg)
+
+                    if bot and chat_id and message_id and loop:
+                        _safe_edit_text(bot, chat_id, message_id, msg, loop)
+
+                    last_update = now
+
+        process.wait(timeout=7200)
+
+        if process.returncode != 0:
+            logger.error(f"HEVC conversion failed with code {process.returncode}")
+            return False
+
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            logger.error("HEVC conversion produced empty output")
+            return False
+
+        output_size = os.path.getsize(output_path)
+        logger.info(f"HEVC conversion complete: {format_file_size(input_size)} -> {format_file_size(output_size)}")
+        return True
+
+    except subprocess.TimeoutExpired:
+        process.kill()
+        logger.error("HEVC conversion timed out")
+        return False
+    except Exception as e:
+        logger.error(f"HEVC conversion failed: {e}")
         return False
 
 
