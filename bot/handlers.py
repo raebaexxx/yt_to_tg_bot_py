@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
 
@@ -216,17 +216,14 @@ async def _send_video_files(
         file_size = os.path.getsize(file_path)
         caption += f"\nSize: {format_file_size(file_size)}"
 
-        with open(file_path, "rb") as video_file:
-            thumb_file = open(thumb_path, "rb") if thumb_path and os.path.exists(thumb_path) else None
-            try:
-                await message.answer_video(
-                    video=video_file,
-                    caption=caption,
-                    thumbnail=thumb_file,
-                )
-            finally:
-                if thumb_file:
-                    thumb_file.close()
+        video_file = FSInputFile(file_path)
+        thumb_file = FSInputFile(thumb_path) if thumb_path and os.path.exists(thumb_path) else None
+
+        await message.answer_video(
+            video=video_file,
+            caption=caption,
+            thumbnail=thumb_file,
+        )
 
     await add_history(message.from_user.id, url, title, quality)
     await message.answer("Done! Send another link if you want.")
