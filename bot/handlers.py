@@ -278,6 +278,7 @@ async def _send_video_files(
                 video=video_file,
                 caption=caption,
                 thumbnail=thumb_file,
+                supports_streaming=True,
             )
 
             tracker_task.cancel()
