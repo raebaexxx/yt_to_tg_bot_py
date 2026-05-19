@@ -121,8 +121,14 @@ async def download_video(
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [progress_hook],
-        "socket_timeout": 30,
-        "retries": 3,
+        "socket_timeout": 300,
+        "retries": 10,
+        "fragment_retries": 10,
+        "concurrent_fragment_downloads": 4,
+        "retry_sleep_functions": {
+            "http": lambda n: 5 * (n + 1),
+            "fragment": lambda n: 5 * (n + 1),
+        },
     }
 
     if not is_audio:
