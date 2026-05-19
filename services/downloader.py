@@ -129,7 +129,7 @@ async def download_video(
                     logger.info(f"Video already in H.264 MP4 format, no conversion needed: {downloaded}")
                     return downloaded
 
-            mp4_path = os.path.join(output_dir, f"{filename}.mp4")
+            mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
             if not _convert_to_phone_mp4(downloaded, mp4_path):
                 logger.error("Failed to convert video to phone-compatible format")
                 return None
