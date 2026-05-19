@@ -1,8 +1,9 @@
 import os
+import asyncio
 import yt_dlp
 import subprocess
 import logging
-from typing import Optional, Callable
+from typing import Optional
 from config import DOWNLOAD_DIR
 from utils.helpers import sanitize_filename
 
@@ -10,25 +11,41 @@ logger = logging.getLogger(__name__)
 
 
 class ProgressHook:
-    def __init__(self, callback: Optional[Callable] = None):
-        self.callback = callback
+    def __init__(self, bot, chat_id, message_id, loop):
+        self.bot = bot
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.loop = loop
+        self.last_update = 0
 
     def __call__(self, d):
         if d["status"] == "downloading":
+            import time
+            now = time.time()
+            if now - self.last_update < 2:
+                return
+            self.last_update = now
             percent = d.get("_percent_str", "0%")
             speed = d.get("_speed_str", "N/A")
-            if self.callback:
-                self.callback(f"Downloading: {percent} at {speed}")
+            text = f"Downloading: {percent} at {speed}"
+            asyncio.run_coroutine_threadsafe(
+                self.bot.edit_message_text(text=text, chat_id=self.chat_id, message_id=self.message_id),
+                self.loop,
+            )
         elif d["status"] == "finished":
-            if self.callback:
-                self.callback("Download complete, processing...")
+            asyncio.run_coroutine_threadsafe(
+                self.bot.edit_message_text(text="Download complete, processing...", chat_id=self.chat_id, message_id=self.message_id),
+                self.loop,
+            )
 
 
-def download_video(
+async def download_video(
     url: str,
     quality: str,
+    bot,
+    chat_id: int,
+    message_id: int,
     output_dir: str = None,
-    progress_callback: Optional[Callable] = None,
 ) -> Optional[str]:
     if output_dir is None:
         output_dir = DOWNLOAD_DIR
@@ -41,20 +58,21 @@ def download_video(
 
     if quality == "audio":
         format_str = "bestaudio"
-        ext = "m4a"
     else:
-        ext = "mp4"
+        format_str = QUALITY_OPTIONS[quality]
 
     filename = sanitize_filename("video")
     output_template = os.path.join(output_dir, f"{filename}.%(ext)s")
 
+    loop = asyncio.get_event_loop()
+    progress_hook = ProgressHook(bot, chat_id, message_id, loop)
+
     ydl_opts = {
         "format": format_str,
         "outtmpl": output_template,
-        "merge_output_format": "mp4" if quality != "audio" else None,
         "quiet": True,
         "no_warnings": True,
-        "progress_hooks": [ProgressHook(progress_callback)],
+        "progress_hooks": [progress_hook],
         "socket_timeout": 30,
         "retries": 3,
     }

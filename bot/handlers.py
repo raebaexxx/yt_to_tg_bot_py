@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command
@@ -90,7 +90,6 @@ async def _handle_single_video(
 
     title = info.get("title", "Unknown")
     duration = info.get("duration", 0)
-    thumbnail = info.get("thumbnail")
 
     available = get_available_qualities(info)
 
@@ -151,7 +150,7 @@ async def _handle_playlist(
 
 
 @router.callback_query(F.data.startswith("quality_"), VideoDownload.selecting_quality)
-async def handle_quality_selection(callback: CallbackQuery, state: FSMContext):
+async def handle_quality_selection(callback: CallbackQuery, state: FSMContext, bot: Bot):
     quality = callback.data.split("_")[1]
     session = user_sessions.get(callback.from_user.id)
 
@@ -169,14 +168,13 @@ async def handle_quality_selection(callback: CallbackQuery, state: FSMContext):
     user_dir = os.path.join(DOWNLOAD_DIR, str(callback.from_user.id))
     os.makedirs(user_dir, exist_ok=True)
 
-    def progress(text):
-        asyncio.create_task(callback.message.edit_text(text))
-
-    filepath = download_video(
+    filepath = await download_video(
         session["url"],
         quality,
-        user_dir,
-        progress_callback=progress,
+        bot=bot,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        output_dir=user_dir,
     )
 
     if not filepath or not os.path.exists(filepath):
@@ -218,11 +216,17 @@ async def _send_video_files(
         file_size = os.path.getsize(file_path)
         caption += f"\nSize: {format_file_size(file_size)}"
 
-        await message.answer_video(
-            video=open(file_path, "rb"),
-            caption=caption,
-            thumbnail=open(thumb_path, "rb") if thumb_path and os.path.exists(thumb_path) else None,
-        )
+        with open(file_path, "rb") as video_file:
+            thumb_file = open(thumb_path, "rb") if thumb_path and os.path.exists(thumb_path) else None
+            try:
+                await message.answer_video(
+                    video=video_file,
+                    caption=caption,
+                    thumbnail=thumb_file,
+                )
+            finally:
+                if thumb_file:
+                    thumb_file.close()
 
     await add_history(message.from_user.id, url, title, quality)
     await message.answer("Done! Send another link if you want.")
@@ -304,7 +308,7 @@ async def handle_playlist_page(callback: CallbackQuery, state: FSMContext):
 
 
 @router.callback_query(F.data == "pl_download_all")
-async def handle_download_all(callback: CallbackQuery, state: FSMContext):
+async def handle_download_all(callback: CallbackQuery, state: FSMContext, bot: Bot):
     session = user_sessions.get(callback.from_user.id)
 
     if not session or "videos" not in session:
@@ -332,7 +336,7 @@ async def handle_download_all(callback: CallbackQuery, state: FSMContext):
             continue
 
         video_title = video.get("title", f"Video {i}")
-        await callback.message.answer(
+        progress_msg = await callback.message.answer(
             f"Downloading {i}/{len(videos)}: {sanitize_filename(video_title)}"
         )
 
@@ -344,7 +348,14 @@ async def handle_download_all(callback: CallbackQuery, state: FSMContext):
         available = get_available_qualities(info)
         quality = "720p" if "720p" in available else available[0] if available else "360p"
 
-        filepath = download_video(video_url, quality, user_dir)
+        filepath = await download_video(
+            video_url,
+            quality,
+            bot=bot,
+            chat_id=progress_msg.chat.id,
+            message_id=progress_msg.message_id,
+            output_dir=user_dir,
+        )
 
         if filepath and os.path.exists(filepath):
             try:
@@ -372,7 +383,7 @@ async def handle_download_all(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("quality_"), PlaylistDownload.selecting_quality)
 async def handle_playlist_quality_selection(
-    callback: CallbackQuery, state: FSMContext
+    callback: CallbackQuery, state: FSMContext, bot: Bot
 ):
     quality = callback.data.split("_")[1]
     session = user_sessions.get(callback.from_user.id)
@@ -398,7 +409,14 @@ async def handle_playlist_quality_selection(
     user_dir = os.path.join(DOWNLOAD_DIR, str(callback.from_user.id))
     os.makedirs(user_dir, exist_ok=True)
 
-    filepath = download_video(video_url, quality, user_dir)
+    filepath = await download_video(
+        video_url,
+        quality,
+        bot=bot,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+        output_dir=user_dir,
+    )
 
     if not filepath or not os.path.exists(filepath):
         await callback.message.edit_text("Download failed.")
