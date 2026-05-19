@@ -44,7 +44,6 @@ async def main():
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
-    dp.shutdown_register(on_shutdown)
 
     loop = asyncio.get_event_loop()
     stop_event = asyncio.Event()
