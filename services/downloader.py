@@ -199,7 +199,7 @@ async def download_video(
     if not is_audio:
         ydl_opts["merge_output_format"] = "mp4"
 
-    try:
+    def _do_download():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if not info:
@@ -226,22 +226,57 @@ async def download_video(
                 logger.error(f"Downloaded file not found: {downloaded}")
                 return None
 
-            if is_audio:
-                if not downloaded.endswith(".m4a"):
-                    m4a_path = os.path.join(output_dir, f"{filename}.m4a")
-                    _convert_audio_to_m4a(downloaded, m4a_path)
-                    if os.path.exists(m4a_path):
+            return info, downloaded
+
+    try:
+        result = await asyncio.to_thread(_do_download)
+        if result is None:
+            return None
+
+        info, downloaded = result
+
+        if is_audio:
+            if not downloaded.endswith(".m4a"):
+                m4a_path = os.path.join(output_dir, f"{filename}.m4a")
+                _convert_audio_to_m4a(downloaded, m4a_path)
+                if os.path.exists(m4a_path):
+                    os.remove(downloaded)
+                    return (m4a_path, None, None)
+            return (downloaded, None, None)
+
+        video_codec, width, height = _get_video_info(downloaded)
+        file_ext = os.path.splitext(downloaded)[1]
+        file_size = os.path.getsize(downloaded)
+        logger.info(f"Downloaded: {downloaded}, codec: {video_codec}, ext: {file_ext}, size: {format_file_size(file_size)}, dims: {width}x{height}")
+
+        if video_codec in ("h264", "avc1"):
+            logger.info("Video is already H.264, preparing for streaming (no re-encode)")
+            mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
+            if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
+                os.remove(downloaded)
+                return (mp4_path, width, height)
+            else:
+                logger.warning("Faststart failed, sending original file")
+                return (downloaded, width, height)
+
+        if quality == "4k":
+            if is_ios:
+                logger.info("4K video — iPhone user, converting to HEVC 1080p")
+                mp4_path = os.path.join(output_dir, f"{filename}_hevc.mp4")
+                if not _convert_to_hevc_1080p(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
+                    logger.warning("HEVC conversion failed, falling back to remux")
+                    mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
+                    if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
                         os.remove(downloaded)
-                        return (m4a_path, None, None)
-                return (downloaded, None, None)
-
-            video_codec, width, height = _get_video_info(downloaded)
-            file_ext = os.path.splitext(downloaded)[1]
-            file_size = os.path.getsize(downloaded)
-            logger.info(f"Downloaded: {downloaded}, codec: {video_codec}, ext: {file_ext}, size: {format_file_size(file_size)}, dims: {width}x{height}")
-
-            if video_codec in ("h264", "avc1"):
-                logger.info("Video is already H.264, preparing for streaming (no re-encode)")
+                        w2, h2 = _get_video_info(mp4_path)
+                        return (mp4_path, w2, h2)
+                    else:
+                        return (downloaded, width, height)
+                else:
+                    os.remove(downloaded)
+                    return (mp4_path, width, height)
+            else:
+                logger.info("4K video — PC/Android user, remux with faststart only (no codec conversion)")
                 mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
                 if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
                     os.remove(downloaded)
@@ -250,40 +285,14 @@ async def download_video(
                     logger.warning("Faststart failed, sending original file")
                     return (downloaded, width, height)
 
-            if quality == "4k":
-                if is_ios:
-                    logger.info("4K video — iPhone user, converting to HEVC 1080p")
-                    mp4_path = os.path.join(output_dir, f"{filename}_hevc.mp4")
-                    if not _convert_to_hevc_1080p(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
-                        logger.warning("HEVC conversion failed, falling back to remux")
-                        mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
-                        if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
-                            os.remove(downloaded)
-                            w2, h2 = _get_video_info(mp4_path)
-                            return (mp4_path, w2, h2)
-                        else:
-                            return (downloaded, width, height)
-                    else:
-                        os.remove(downloaded)
-                        return (mp4_path, width, height)
-                else:
-                    logger.info("4K video — PC/Android user, remux with faststart only (no codec conversion)")
-                    mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
-                    if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
-                        os.remove(downloaded)
-                        return (mp4_path, width, height)
-                    else:
-                        logger.warning("Faststart failed, sending original file")
-                        return (downloaded, width, height)
-
-            logger.info(f"Video codec {video_codec} requires conversion to H.264")
-            mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
-            if not _convert_to_phone_mp4(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
-                logger.error("Failed to convert video to phone-compatible format")
-                return None
-            if os.path.exists(mp4_path):
-                os.remove(downloaded)
-            return (mp4_path, width, height)
+        logger.info(f"Video codec {video_codec} requires conversion to H.264")
+        mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
+        if not _convert_to_phone_mp4(downloaded, mp4_path, bot, chat_id, message_id, loop, cancel_ctx):
+            logger.error("Failed to convert video to phone-compatible format")
+            return None
+        if os.path.exists(mp4_path):
+            os.remove(downloaded)
+        return (mp4_path, width, height)
 
     except yt_dlp.utils.DownloadError as e:
         if "cancelled" in str(e).lower():
