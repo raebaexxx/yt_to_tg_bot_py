@@ -56,21 +56,23 @@ def _build_format_string(quality: str) -> tuple:
 
     if quality == "4k":
         fmt = (
-            "bestvideo[height=2160]+bestaudio[acodec^=mp4a]/"
-            "bestvideo[height=2160]+bestaudio/"
-            "bestvideo[height>=2160]+bestaudio[acodec^=mp4a]/"
-            "bestvideo[height>=2160]+bestaudio/"
+            "bestvideo[vcodec^=avc1][height=2160]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[vcodec^=avc1][height=2160]+bestaudio/"
+            "bestvideo[vcodec^=avc1][height>=2160]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[vcodec^=avc1][height>=2160]+bestaudio/"
             "bestvideo[vcodec^=avc1][height<=2160]+bestaudio[acodec^=mp4a]/"
             "bestvideo[vcodec^=avc1][height<=2160]+bestaudio/"
-            "bestvideo[height<=2160]+bestaudio[acodec^=mp4a]/"
-            "bestvideo[height<=2160]+bestaudio/"
+            "bestvideo[vcodec^=avc1][height=1080]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[vcodec^=avc1][height=1080]+bestaudio/"
+            "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[vcodec^=avc1][height<=1080]+bestaudio/"
             "best[height<=2160][ext=mp4]/"
             "best[height<=2160]"
         )
     elif quality == "1080p":
         fmt = (
-            "bestvideo[height=1080]+bestaudio[acodec^=mp4a]/"
-            "bestvideo[height=1080]+bestaudio/"
+            "bestvideo[vcodec^=avc1][height=1080]+bestaudio[acodec^=mp4a]/"
+            "bestvideo[vcodec^=avc1][height=1080]+bestaudio/"
             "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/"
             "bestvideo[vcodec^=avc1][height<=1080]+bestaudio/"
             "bestvideo[height<=1080]+bestaudio[acodec^=mp4a]/"
@@ -171,18 +173,6 @@ async def download_video(
 
             if video_codec in ("h264", "avc1"):
                 logger.info("Video is already H.264, preparing for streaming (no re-encode)")
-                mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
-                if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop):
-                    os.remove(downloaded)
-                    width, height = _get_video_dimensions(mp4_path)
-                    return (mp4_path, width, height)
-                else:
-                    logger.warning("Faststart failed, sending original file")
-                    width, height = _get_video_dimensions(downloaded)
-                    return (downloaded, width, height)
-
-            if quality == "4k":
-                logger.info("4K video — remux with faststart only (no re-encode)")
                 mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
                 if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop):
                     os.remove(downloaded)
