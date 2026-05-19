@@ -177,19 +177,20 @@ async def handle_quality_selection(callback: CallbackQuery, state: FSMContext, b
         output_dir=user_dir,
     )
 
-    if not filepath or not os.path.exists(filepath):
+    if not filepath or not os.path.exists(filepath[0]):
         await callback.message.edit_text("Download failed. Try again later.")
         cleanup_user_session(user_dir)
         await state.clear()
         return
 
+    filepath, width, height = filepath
     file_size = os.path.getsize(filepath)
     await callback.message.edit_text(
         f"Download complete! Uploading to Telegram...\nSize: {format_file_size(file_size)}"
     )
 
     try:
-        await _send_video_files(callback.message, filepath, session["title"], session["url"], quality, bot)
+        await _send_video_files(callback.message, filepath, session["title"], session["url"], quality, bot, width, height)
     except Exception as e:
         logger.error(f"Failed to send video: {e}")
         await callback.message.answer("Failed to send video. Try again.")
@@ -235,7 +236,7 @@ async def _upload_progress_tracker(
 
 
 async def _send_video_files(
-    message: Message, filepath: str, title: str, url: str, quality: str, bot: Bot
+    message: Message, filepath: str, title: str, url: str, quality: str, bot: Bot, width: int = None, height: int = None
 ):
     user_dir = os.path.dirname(filepath)
     files_to_send = split_video(filepath, user_dir)
@@ -279,6 +280,8 @@ async def _send_video_files(
                 caption=caption,
                 thumbnail=thumb_file,
                 supports_streaming=True,
+                width=width,
+                height=height,
             )
 
             tracker_task.cancel()
@@ -426,14 +429,15 @@ async def handle_download_all(callback: CallbackQuery, state: FSMContext, bot: B
             output_dir=user_dir,
         )
 
-        if filepath and os.path.exists(filepath):
+        if filepath and os.path.exists(filepath[0]):
+            filepath, width, height = filepath
             file_size = os.path.getsize(filepath)
             await progress_msg.edit_text(
                 f"Download complete! Uploading to Telegram...\nSize: {format_file_size(file_size)}"
             )
             try:
                 await _send_video_files(
-                    callback.message, filepath, video_title, video_url, quality, bot
+                    callback.message, filepath, video_title, video_url, quality, bot, width, height
                 )
                 success_count += 1
             except Exception as e:
@@ -491,12 +495,13 @@ async def handle_playlist_quality_selection(
         output_dir=user_dir,
     )
 
-    if not filepath or not os.path.exists(filepath):
+    if not filepath or not os.path.exists(filepath[0]):
         await callback.message.edit_text("Download failed.")
         cleanup_user_session(user_dir)
         await state.clear()
         return
 
+    filepath, width, height = filepath
     file_size = os.path.getsize(filepath)
     await callback.message.edit_text(
         f"Download complete! Uploading to Telegram...\nSize: {format_file_size(file_size)}"
@@ -504,7 +509,7 @@ async def handle_playlist_quality_selection(
 
     try:
         await _send_video_files(
-            callback.message, filepath, video_title, video_url, quality, bot
+            callback.message, filepath, video_title, video_url, quality, bot, width, height
         )
     except Exception as e:
         logger.error(f"Failed to send video: {e}")

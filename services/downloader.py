@@ -63,12 +63,22 @@ def _build_format_string(quality: str) -> tuple:
     }
     h = height_map.get(quality, 720)
 
-    native_mp4 = (
-        f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio[acodec^=mp4a]/"
-        f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio/"
-        f"best[height<={h}][ext=mp4]/"
-        f"best[height<={h}]"
-    )
+    if quality in ("4k", "1080p"):
+        native_mp4 = (
+            f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio[acodec^=mp4a]/"
+            f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio/"
+            f"bestvideo[height<={h}]+bestaudio[acodec^=mp4a]/"
+            f"bestvideo[height<={h}]+bestaudio/"
+            f"best[height<={h}][ext=mp4]/"
+            f"best[height<={h}]"
+        )
+    else:
+        native_mp4 = (
+            f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio[acodec^=mp4a]/"
+            f"bestvideo[vcodec^=avc1][height<={h}]+bestaudio/"
+            f"best[height<={h}][ext=mp4]/"
+            f"best[height<={h}]"
+        )
     return native_mp4, False
 
 
@@ -79,7 +89,7 @@ async def download_video(
     chat_id: int,
     message_id: int,
     output_dir: str = None,
-) -> Optional[str]:
+) -> Optional[tuple]:
     if output_dir is None:
         output_dir = DOWNLOAD_DIR
 
@@ -132,8 +142,8 @@ async def download_video(
                     _convert_audio_to_m4a(downloaded, m4a_path)
                     if os.path.exists(m4a_path):
                         os.remove(downloaded)
-                        return m4a_path
-                return downloaded
+                        return (m4a_path, None, None)
+                return (downloaded, None, None)
 
             video_codec = _get_video_codec(downloaded)
             file_ext = os.path.splitext(downloaded)[1]
@@ -145,10 +155,12 @@ async def download_video(
                 mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
                 if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop):
                     os.remove(downloaded)
-                    return mp4_path
+                    width, height = _get_video_dimensions(mp4_path)
+                    return (mp4_path, width, height)
                 else:
                     logger.warning("Faststart failed, sending original file")
-                    return downloaded
+                    width, height = _get_video_dimensions(downloaded)
+                    return (downloaded, width, height)
 
             logger.info(f"Video codec {video_codec} requires conversion to H.264")
             mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
@@ -157,7 +169,8 @@ async def download_video(
                 return None
             if os.path.exists(mp4_path):
                 os.remove(downloaded)
-            return mp4_path
+            width, height = _get_video_dimensions(mp4_path)
+            return (mp4_path, width, height)
 
     except Exception as e:
         logger.error(f"Failed to download video: {e}")
@@ -178,6 +191,25 @@ def _get_video_codec(filepath: str) -> Optional[str]:
         return result.stdout.strip().strip(",")
     except Exception:
         return None
+
+
+def _get_video_dimensions(filepath: str) -> tuple:
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "csv=p=0",
+        filepath,
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        parts = result.stdout.strip().strip(",").split(",")
+        if len(parts) == 2:
+            return int(parts[0]), int(parts[1])
+    except Exception:
+        pass
+    return None, None
 
 
 def _safe_edit_text(bot, chat_id, message_id, text, loop):
