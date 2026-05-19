@@ -126,18 +126,21 @@ async def download_video(
                 return downloaded
 
             video_codec = _get_video_codec(downloaded)
-            logger.info(f"Video codec: {video_codec}, ext: {os.path.splitext(downloaded)[1]}")
+            file_ext = os.path.splitext(downloaded)[1]
+            file_size = os.path.getsize(downloaded)
+            logger.info(f"Downloaded: {downloaded}, codec: {video_codec}, ext: {file_ext}, size: {format_file_size(file_size)}")
 
             if video_codec in ("h264", "avc1"):
-                if downloaded.endswith(".mp4"):
-                    logger.info(f"Video already H.264 MP4, just adding faststart flag")
-                    mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
-                    if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop):
-                        os.remove(downloaded)
-                        return mp4_path
-                    else:
-                        return downloaded
+                logger.info("Video is already H.264, preparing for streaming (no re-encode)")
+                mp4_path = os.path.join(output_dir, f"{filename}_fixed.mp4")
+                if _add_faststart(downloaded, mp4_path, bot, chat_id, message_id, loop):
+                    os.remove(downloaded)
+                    return mp4_path
+                else:
+                    logger.warning("Faststart failed, sending original file")
+                    return downloaded
 
+            logger.info(f"Video codec {video_codec} requires conversion to H.264")
             mp4_path = os.path.join(output_dir, f"{filename}_converted.mp4")
             if not _convert_to_phone_mp4(downloaded, mp4_path, bot, chat_id, message_id, loop):
                 logger.error("Failed to convert video to phone-compatible format")
@@ -176,21 +179,24 @@ def _add_faststart(input_path: str, output_path: str, bot=None, chat_id=None, me
         "-y", output_path,
     ]
 
-    logger.info(f"Adding faststart flag (no re-encode): {' '.join(cmd)}")
+    logger.info(f"Adding faststart (stream copy, no re-encode)")
+    logger.info(f"Command: {' '.join(cmd)}")
 
     try:
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
         )
 
         start_time = time.time()
         last_update = 0
 
-        for line in process.stderr:
+        for line in process.stdout:
             line_str = line.strip()
+            logger.debug(f"FFmpeg faststart: {line_str}")
+
             now = time.time()
             if now - last_update >= 2:
                 elapsed = int(now - start_time)
@@ -198,19 +204,24 @@ def _add_faststart(input_path: str, output_path: str, bot=None, chat_id=None, me
                 logger.info(msg)
 
                 if bot and chat_id and message_id and loop:
-                    asyncio.run_coroutine_threadsafe(
-                        bot.edit_message_text(text=msg, chat_id=chat_id, message_id=message_id),
-                        loop,
-                    )
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            bot.edit_message_text(text=msg, chat_id=chat_id, message_id=message_id),
+                            loop,
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to update Telegram message: {e}")
+
                 last_update = now
 
         process.wait(timeout=300)
 
         if process.returncode != 0:
-            logger.error(f"Faststart failed")
+            logger.error(f"Faststart failed with code {process.returncode}")
             return False
 
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            logger.error("Faststart produced empty output")
             return False
 
         input_size = os.path.getsize(input_path)
@@ -242,13 +253,14 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
         "-y", output_path,
     ]
 
-    logger.info(f"Starting FFmpeg conversion: {' '.join(cmd)}")
+    logger.info(f"Starting FFmpeg conversion")
+    logger.info(f"Command: {' '.join(cmd)}")
 
     try:
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
         )
 
@@ -256,17 +268,17 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
         start_time = time.time()
         last_update = 0
         total_duration = None
-        stderr_lines = []
 
-        for line in process.stderr:
+        for line in process.stdout:
             line_str = line.strip()
-            stderr_lines.append(line_str)
+            logger.debug(f"FFmpeg: {line_str}")
 
             if total_duration is None:
                 dur_match = duration_pattern.search(line_str)
                 if dur_match:
                     h, m, s = dur_match.groups()
                     total_duration = int(h) * 3600 + int(m) * 60 + float(s)
+                    logger.info(f"Video duration: {total_duration:.1f}s")
 
             time_match = time_pattern.search(line_str)
             if time_match:
@@ -283,17 +295,20 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
                     logger.info(msg)
 
                     if bot and chat_id and message_id and loop:
-                        asyncio.run_coroutine_threadsafe(
-                            bot.edit_message_text(text=msg, chat_id=chat_id, message_id=message_id),
-                            loop,
-                        )
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                bot.edit_message_text(text=msg, chat_id=chat_id, message_id=message_id),
+                                loop,
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to update Telegram message: {e}")
 
                     last_update = now
 
         process.wait(timeout=7200)
 
         if process.returncode != 0:
-            logger.error(f"FFmpeg conversion failed: {' '.join(stderr_lines[-5:])}")
+            logger.error(f"FFmpeg conversion failed with code {process.returncode}")
             return False
 
         if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
