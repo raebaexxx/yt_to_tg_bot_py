@@ -19,6 +19,22 @@ class ProgressHook:
         self.message_id = message_id
         self.loop = loop
         self.last_update = 0
+        self._edit_task = None
+
+    def _safe_edit(self, text):
+        async def _do_edit():
+            try:
+                await self.bot.edit_message_text(
+                    text=text,
+                    chat_id=self.chat_id,
+                    message_id=self.message_id,
+                )
+            except Exception as e:
+                logger.debug(f"Progress edit failed (ignored): {e}")
+
+        if self._edit_task and not self._edit_task.done():
+            self._edit_task.cancel()
+        self._edit_task = asyncio.run_coroutine_threadsafe(_do_edit(), self.loop)
 
     def __call__(self, d):
         if d["status"] == "downloading":
@@ -29,15 +45,9 @@ class ProgressHook:
             percent = d.get("_percent_str", "0%")
             speed = d.get("_speed_str", "N/A")
             text = f"Downloading: {percent} at {speed}"
-            asyncio.run_coroutine_threadsafe(
-                self.bot.edit_message_text(text=text, chat_id=self.chat_id, message_id=self.message_id),
-                self.loop,
-            )
+            self._safe_edit(text)
         elif d["status"] == "finished":
-            asyncio.run_coroutine_threadsafe(
-                self.bot.edit_message_text(text="Download complete!", chat_id=self.chat_id, message_id=self.message_id),
-                self.loop,
-            )
+            self._safe_edit("Download complete!")
 
 
 def _build_format_string(quality: str) -> tuple:
@@ -165,9 +175,23 @@ def _get_video_codec(filepath: str) -> Optional[str]:
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        return result.stdout.strip()
+        return result.stdout.strip().strip(",")
     except Exception:
         return None
+
+
+def _safe_edit_text(bot, chat_id, message_id, text, loop):
+    async def _do_edit():
+        try:
+            await bot.edit_message_text(
+                text=text,
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+        except Exception as e:
+            logger.debug(f"Edit message failed (ignored): {e}")
+
+    asyncio.run_coroutine_threadsafe(_do_edit(), loop)
 
 
 def _add_faststart(input_path: str, output_path: str, bot=None, chat_id=None, message_id=None, loop=None) -> bool:
@@ -198,20 +222,11 @@ def _add_faststart(input_path: str, output_path: str, bot=None, chat_id=None, me
             logger.debug(f"FFmpeg faststart: {line_str}")
 
             now = time.time()
-            if now - last_update >= 2:
+            if now - last_update >= 2 and bot and chat_id and message_id and loop:
                 elapsed = int(now - start_time)
                 msg = f"Preparing video for streaming... ({elapsed}s)"
                 logger.info(msg)
-
-                if bot and chat_id and message_id and loop:
-                    try:
-                        asyncio.run_coroutine_threadsafe(
-                            bot.edit_message_text(text=msg, chat_id=chat_id, message_id=message_id),
-                            loop,
-                        )
-                    except Exception as e:
-                        logger.debug(f"Failed to update Telegram message: {e}")
-
+                _safe_edit_text(bot, chat_id, message_id, msg, loop)
                 last_update = now
 
         process.wait(timeout=300)
@@ -295,13 +310,7 @@ def _convert_to_phone_mp4(input_path: str, output_path: str, bot=None, chat_id=N
                     logger.info(msg)
 
                     if bot and chat_id and message_id and loop:
-                        try:
-                            asyncio.run_coroutine_threadsafe(
-                                bot.edit_message_text(text=msg, chat_id=chat_id, message_id=message_id),
-                                loop,
-                            )
-                        except Exception as e:
-                            logger.debug(f"Failed to update Telegram message: {e}")
+                        _safe_edit_text(bot, chat_id, message_id, msg, loop)
 
                     last_update = now
 
