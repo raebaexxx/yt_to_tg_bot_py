@@ -412,8 +412,7 @@ def _convert_4k_to_1080p(input_path: str, output_path: str, bot=None, chat_id=No
         "-tune", "fastdecode",
         "-crf", "30",
         "-profile:v", "high",
-        "-level", "4.0",
-        "-vf", "scale=-1:1080",
+        "-level", "5.2",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", "128k",
@@ -421,7 +420,7 @@ def _convert_4k_to_1080p(input_path: str, output_path: str, bot=None, chat_id=No
         "-y", output_path,
     ]
 
-    logger.info(f"Starting 4K to 1080p conversion")
+    logger.info(f"Starting 4K conversion to H.264")
     logger.info(f"Command: {' '.join(cmd)}")
 
     try:
@@ -459,7 +458,7 @@ def _convert_4k_to_1080p(input_path: str, output_path: str, bot=None, chat_id=No
                     speed = current_time / elapsed if elapsed > 0 else 0
                     percent = int((current_time / total_duration) * 100) if total_duration else 0
 
-                    msg = f"Converting 4K to 1080p: {percent}% (speed: {speed:.1f}x)"
+                    msg = f"Converting 4K to H.264: {percent}% (speed: {speed:.1f}x)"
                     logger.info(msg)
 
                     if bot and chat_id and message_id and loop:
@@ -478,7 +477,7 @@ def _convert_4k_to_1080p(input_path: str, output_path: str, bot=None, chat_id=No
             return False
 
         output_size = os.path.getsize(output_path)
-        logger.info(f"4K to 1080p conversion complete: {format_file_size(input_size)} -> {format_file_size(output_size)}")
+        logger.info(f"4K conversion complete: {format_file_size(input_size)} -> {format_file_size(output_size)}")
         return True
 
     except subprocess.TimeoutExpired:
